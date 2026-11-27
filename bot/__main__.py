@@ -8,7 +8,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import SimpleEventIsolation
-from aiogram.types import ErrorEvent
+from aiogram.types import BotCommand, ErrorEvent, MenuButtonCommands
 
 from . import scheduler
 from .config import load_config
@@ -169,6 +169,13 @@ async def run_bot(cfg, db: DB, persister: Persister) -> None:
     bot = Bot(cfg.token, default=DefaultBotProperties(parse_mode=ParseMode.HTML,
                                                        link_preview_is_disabled=True))
     dp = build_dispatcher(db, cfg)
+    try:
+        # кнопка «Меню» слева от поля ввода в Telegram
+        await bot.set_my_commands([BotCommand(command="menu", description="🏠 Главное меню"),
+                                   BotCommand(command="cancel", description="✖️ Отменить действие")])
+        await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+    except Exception as e:
+        log.warning("Не удалось установить меню команд: %s", type(e).__name__)
 
     async def alert_owner(text: str | None):
         from .notify import send_safe

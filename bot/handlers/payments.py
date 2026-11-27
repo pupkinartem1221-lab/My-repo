@@ -8,7 +8,7 @@ from aiogram.types import CallbackQuery, Message
 
 from ..db import DB
 from ..keyboards import (BTN_RECEIPTS, back_btn, btn, cancel_kb, confirm_kb, danger_btn, kb, main_btn,
-                         main_kb, ok_btn)
+                         home_btn, ok_btn)
 
 from ..notify import notify_admins, notify_user, send_file_safe
 from ..utils import (PAYMENT_STATUSES, clip, esc, fit, fmt_dt, fmt_money, is_admin, now, parse_money,
@@ -272,11 +272,11 @@ async def receipt_review(cb: CallbackQuery, db: DB, user, bot: Bot):
 async def pending_list(message: Message, state: FSMContext, db: DB, user, bot: Bot):
     await state.clear()
     if not is_admin(user):
-        await message.answer("Нет доступа.", reply_markup=main_kb(user))
+        await message.answer("Нет доступа.")
         return
     rows = await db.all("SELECT * FROM payments WHERE status='pending' ORDER BY id")
     if not rows:
-        await message.answer("🧾 Нет квитанций, ожидающих подтверждения.")
+        await message.answer("🧾 Нет квитанций, ожидающих подтверждения. ✨", reply_markup=kb([home_btn()]))
         return
     total = sum(r["amount"] for r in rows)
     await message.answer(f"🧾 Ожидают подтверждения: <b>{len(rows)}</b> на {fmt_money(total)}")
@@ -284,8 +284,16 @@ async def pending_list(message: Message, state: FSMContext, db: DB, user, bot: B
         await send_file_safe(bot, message.chat.id, p["file_id"], p["file_type"],
                              await payment_caption(db, p, user), payment_kb(p, True))
         await asyncio.sleep(0.4)
-    if len(rows) > 10:
-        await message.answer(f"…и ещё {len(rows) - 10}. Обработайте эти и нажмите «{BTN_RECEIPTS}» снова.")
+    more = f"…и ещё {len(rows) - 10}. Обработайте эти и обновите список." if len(rows) > 10 else "Это все квитанции."
+    await message.answer(more, reply_markup=kb([main_btn("🔄 Обновить список", "m:receipts")], [home_btn()]))
+
+
+@router.callback_query(F.data == "m:receipts")
+async def pending_list_cb(cb: CallbackQuery, state: FSMContext, db: DB, user, bot: Bot):
+    if not is_admin(user):
+        return await cb.answer("Нет доступа", show_alert=True)
+    await cb.answer()
+    await pending_list(cb.message, state, db, user, bot)
 
 
 # --- просмотр оплат клиента ---

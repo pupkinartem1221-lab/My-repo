@@ -7,7 +7,7 @@ from aiogram.types import CallbackQuery, Message
 
 from ..db import DB
 from ..keyboards import (BLUE, BTN_CLIENTS, BTN_NEW_CLIENT, GREEN, RED, back_btn, btn, cancel_kb, confirm_kb,
-                         copy_btn, danger_btn, kb, main_btn, pager)
+                         copy_btn, danger_btn, home_btn, kb, main_btn, pager)
 from ..notify import notify_admins, notify_user
 from ..utils import (CLIENT_STATUSES, clip, esc, fit, fmt_dt, fmt_money, is_admin, like_escape, now,
                      user_label, user_name)
@@ -81,7 +81,7 @@ async def list_view(db: DB, user, flt: str, page: int):
     flt_row = [btn(v if k == "all" else v.split(" ")[0], f"cl:l:{k}:0", BLUE if k == flt else None)
                for k, v in FILTERS.items()]
     markup = kb(flt_row, *[client_btn(c) for c in rows], pager(f"cl:l:{flt}:", page, pages),
-                [btn("🔍 Поиск", "cl:search")])
+                [btn("🔍 Поиск", "cl:search"), main_btn("➕ Новый клиент", "m:new")], [home_btn()])
     return text, markup
 
 
@@ -90,6 +90,14 @@ async def clients_menu(message: Message, state: FSMContext, db: DB, user):
     await state.clear()
     text, markup = await list_view(db, user, "all", 0)
     await message.answer(text, reply_markup=markup)
+
+
+@router.callback_query(F.data == "m:clients")
+async def clients_menu_cb(cb: CallbackQuery, state: FSMContext, db: DB, user):
+    await state.clear()
+    text, markup = await list_view(db, user, "all", 0)
+    await cb.answer()
+    await show(cb, text, markup)
 
 
 @router.callback_query(F.data.startswith("cl:l:"))
@@ -125,9 +133,11 @@ async def search_do(message: Message, state: FSMContext, db: DB, user):
     rows = await db.all(sql + " ORDER BY id DESC LIMIT 20", *params)
     await state.clear()
     if not rows:
-        await message.answer("Ничего не найдено.")
+        await message.answer("🔍 Ничего не найдено.", reply_markup=kb(
+            [btn("🔍 Искать ещё", "cl:search")], [back_btn("cl:l:all:0", "« К списку"), home_btn()]))
         return
-    await message.answer(f"🔍 Найдено: {len(rows)}", reply_markup=kb(*[client_btn(c) for c in rows]))
+    await message.answer(f"🔍 Найдено: {len(rows)}",
+                         reply_markup=kb(*[client_btn(c) for c in rows], [back_btn("cl:l:all:0", "« К списку"), home_btn()]))
 
 
 # --- карточка ---
@@ -186,7 +196,7 @@ async def card_view(db: DB, user, c):
         rows.append([copy_btn("📋 Скопировать телефон", c["phone"])])
     if is_admin(user):
         rows.append([btn("👤 Сменить сотрудника", f"cl:w:{cid}"), danger_btn("🗑 Удалить", f"cl:del:{cid}")])
-    rows.append([back_btn("cl:l:all:0", "« К списку")])
+    rows.append([back_btn("cl:l:all:0", "« К списку"), home_btn()])
     return fit(lines), kb(*rows)
 
 
@@ -415,6 +425,12 @@ async def client_delete(cb: CallbackQuery, db: DB, user, bot: Bot):
 
 
 # --- новый клиент ---
+
+@router.callback_query(F.data == "m:new")
+async def new_client_start_cb(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    await new_client_start(cb.message, state)
+
 
 @router.message(F.text == BTN_NEW_CLIENT)
 async def new_client_start(message: Message, state: FSMContext):
