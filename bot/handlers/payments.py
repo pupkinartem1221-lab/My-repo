@@ -7,7 +7,9 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
 from ..db import DB
-from ..keyboards import BTN_RECEIPTS, btn, cancel_kb, kb, main_kb
+from ..keyboards import (BTN_RECEIPTS, back_btn, btn, cancel_kb, confirm_kb, danger_btn, kb, main_btn,
+                         main_kb, ok_btn)
+
 from ..notify import notify_admins, notify_user, send_file_safe
 from ..utils import (PAYMENT_STATUSES, clip, esc, fit, fmt_dt, fmt_money, is_admin, now, parse_money,
                      user_name)
@@ -66,8 +68,9 @@ def payment_kb(p, admin: bool):
     if not admin:
         return None
     if p["status"] == "pending":
-        return kb([btn("✅ Подтвердить", f"pay:ok:{p['id']}"), btn("❌ Отклонить", f"pay:no:{p['id']}")])
-    return kb([btn("🗑 Удалить", f"pay:del:{p['id']}")])
+        return kb([ok_btn("✅ Подтвердить", f"pay:ok:{p['id']}"), danger_btn("❌ Отклонить", f"pay:no:{p['id']}")],
+                  [btn("👤 Клиент", f"cl:v:{p['client_id']}")] if p["client_id"] else [])
+    return kb([danger_btn("🗑 Удалить", f"pay:del:{p['id']}")])
 
 
 async def can_view(db: DB, user, p) -> bool:
@@ -193,7 +196,7 @@ async def finalize(message: Message, state: FSMContext, db: DB, user, bot: Bot, 
     await db.audit(user["id"], f"Квитанция #{pid}: клиент #{c['id']}, {fmt_money(data['amount'])}")
     tail = "создана и ждёт подтверждения." if is_admin(user) else "отправлена админам на проверку."
     await message.answer(f"✅ Квитанция #{pid} на {fmt_money(data['amount'])} {tail}",
-                         reply_markup=kb([btn("« К клиенту", f"cl:v:{c['id']}")]))
+                         reply_markup=kb([back_btn(f"cl:v:{c['id']}", "« К клиенту")]))
     p = await db.one("SELECT * FROM payments WHERE id=?", pid)
     await send_to_admins(bot, db, p)
 
@@ -254,7 +257,7 @@ async def receipt_review(cb: CallbackQuery, db: DB, user, bot: Bot):
         await cb.answer("Квитанция отклонена")
 
     await update_card_message(cb, await payment_caption(db, p, user), payment_kb(p, True))
-    open_kb = kb([btn("Открыть клиента", f"cl:v:{p['client_id']}")]) if p["client_id"] else None
+    open_kb = kb([main_btn("👤 Открыть клиента", f"cl:v:{p['client_id']}")]) if p["client_id"] else None
     notified = {user["id"]}
     for uid, text in ((p["worker_id"], worker_text), (p["submitted_by"], submitter_text)):
         if uid and uid not in notified:
@@ -296,16 +299,18 @@ async def client_payments(cb: CallbackQuery, db: DB, user):
     await cb.answer()
     if not rows:
         await show(cb, f"💰 У клиента #{c['id']} пока нет оплат.",
-                   kb([btn("🧾 Добавить квитанцию", f"pay:new:{c['id']}")],
-                      [btn("« К клиенту", f"cl:v:{c['id']}")]))
+                   kb([main_btn("🧾 Добавить квитанцию", f"pay:new:{c['id']}")],
+                      [back_btn(f"cl:v:{c['id']}", "« К клиенту")]))
         return
     lines = [f"💰 <b>Оплаты — клиент #{c['id']} {esc(clip(c['name'], 60))}</b>\n"]
     buttons = []
     for p in rows:
         icon = PAYMENT_STATUSES[p["status"]].split(" ")[0]
         lines.append(f"{icon} #{p['id']} · {fmt_money(p['amount'])} · {fmt_dt(p['submitted_at'])}")
-        buttons.append([btn(f"{icon} #{p['id']} {fmt_money(p['amount'])}", f"pay:v:{p['id']}")])
-    buttons.append([btn("« К клиенту", f"cl:v:{c['id']}")])
+        buttons.append([btn(f"{icon} #{p['id']} · {fmt_money(p['amount'])} · {fmt_dt(p['submitted_at'])[:5]}",
+                            f"pay:v:{p['id']}")])
+    buttons.append([main_btn("🧾 Добавить квитанцию", f"pay:new:{c['id']}")])
+    buttons.append([back_btn(f"cl:v:{c['id']}", "« К клиенту")])
     await show(cb, fit(lines), kb(*buttons))
 
 
@@ -327,8 +332,7 @@ async def payment_delete_ask(cb: CallbackQuery, user):
     await cb.answer()
     await cb.message.answer(f"🗑 Удалить квитанцию #{pid}? Если она подтверждена, она пропадёт из отчётов "
                             "и заработок сотрудника уменьшится.",
-                            reply_markup=kb([btn("✅ Да, удалить", f"pay:delok:{pid}"),
-                                             btn("« Нет", "cancel")]))
+                            reply_markup=confirm_kb(f"pay:delok:{pid}", "cancel"))
 
 
 @router.callback_query(F.data.startswith("pay:delok:"))

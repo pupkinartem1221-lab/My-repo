@@ -3,7 +3,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from ..db import DB
-from ..keyboards import BTN_LOG, BTN_MY_STATS, BTN_REPORTS, btn, kb
+from ..keyboards import BLUE, BTN_LOG, BTN_MY_STATS, BTN_REPORTS, btn, kb
 from ..reports import PERIODS, admin_report, period, worker_report
 from ..keyboards import main_kb
 from ..utils import esc, fmt_dt, fmt_money, is_admin, user_name
@@ -12,9 +12,11 @@ from .common import show
 router = Router(name="reports")
 
 
-def periods_kb():
+def periods_kb(active: str = "today"):
+    """Выбранный период подсвечен синим."""
     items = list(PERIODS.items())
-    return kb(*[[btn(v, f"rep:{k}") for k, v in items[i:i + 2]] for i in range(0, len(items), 2)])
+    return kb(*[[btn(v, f"rep:{k}", BLUE if k == active else None) for k, v in items[i:i + 2]]
+                for i in range(0, len(items), 2)])
 
 
 @router.message(F.text == BTN_REPORTS)
@@ -32,9 +34,10 @@ async def report_period(cb: CallbackQuery, db: DB, user):
     if not is_admin(user):
         return await cb.answer("Нет доступа", show_alert=True)
     kind = cb.data.split(":")[1]
-    s, e, title = period(kind if kind in PERIODS else "today")
+    kind = kind if kind in PERIODS else "today"
+    s, e, title = period(kind)
     await cb.answer()
-    await show(cb, await admin_report(db, s, e, f"Отчёт: {title}"), periods_kb())
+    await show(cb, await admin_report(db, s, e, f"Отчёт: {title}"), periods_kb(kind))
 
 
 @router.message(F.text == BTN_MY_STATS)

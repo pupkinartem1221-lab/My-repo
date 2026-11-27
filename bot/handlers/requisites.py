@@ -6,7 +6,8 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
 from ..db import DB
-from ..keyboards import BTN_REQS, btn, cancel_kb, kb
+from ..keyboards import (BTN_REQS, back_btn, btn, cancel_kb, confirm_kb, copy_btn, danger_btn, kb,
+                         ok_btn, pager)
 from ..notify import notify_admins, notify_all
 from ..utils import clip, day_range, esc, fmt_dt, fmt_money, iban_ok, ipn_checksum_ok, is_admin, now, today, user_name
 from .common import show
@@ -36,6 +37,16 @@ def req_short(r) -> str:
     return f"{req_icon(r)} #{r['id']} {esc(r['iban'])} ({esc(r['holder'])})"
 
 
+def req_copy_kb(r, *extra_rows):
+    """Кнопки «скопировать» для каждого поля реквизита и для всего текста сразу."""
+    full = f"IBAN: {r['iban']}\nОтримувач: {r['holder']}\nІПН: {r['ipn']}"
+    return kb(
+        [copy_btn("📋 IBAN", r["iban"]), copy_btn("📋 ІПН", r["ipn"])],
+        [copy_btn("📋 ФИО", r["holder"]), copy_btn("📋 Всё сразу", full)],
+        *extra_rows,
+    )
+
+
 def req_for_client(r) -> str:
     """Текст, который удобно скопировать и отправить клиенту."""
     return (
@@ -63,14 +74,9 @@ async def list_view(db: DB, user, page: int = 0):
         text = "💳 <b>Реквизиты</b>\n\nРеквизитов пока нет."
     buttons = [[btn(clip(f"{req_icon(r)} #{r['id']} {r['iban'][-8:]} · {r['holder']}", 60), f"rq:v:{r['id']}")]
                for r in rows]
-    nav = []
-    if page > 0:
-        nav.append(btn("◀️", f"rq:list:{page - 1}"))
-    if page < pages - 1:
-        nav.append(btn("▶️", f"rq:list:{page + 1}"))
-    buttons.append(nav)
+    buttons.append(pager("rq:list:", page, pages))
     if admin:
-        buttons.append([btn("➕ Добавить реквизит", "rq:add")])
+        buttons.append([ok_btn("➕ Добавить реквизит", "rq:add")])
     return text, kb(*buttons)
 
 
@@ -118,13 +124,16 @@ async def card_view(db: DB, user, rid: int):
             f"Поступило всего: {fmt_money(total['s'])} ({total['n']} опл.)\n"
             f"\nДобавил: {user_name(author)}, {fmt_dt(r['created_at'])}"
         )
-        markup = kb(
-            [btn("🔴 Сделать нерабочим" if r["is_active"] else "🟢 Сделать рабочим", f"rq:t:{rid}")],
-            [btn("✏️ Комментарий", f"rq:c:{rid}"), btn("🗑 Удалить", f"rq:del:{rid}")],
-            [btn("« К списку", "rq:list:0")],
+        toggle = (danger_btn("🔴 Сделать нерабочим", f"rq:t:{rid}") if r["is_active"]
+                  else ok_btn("🟢 Сделать рабочим", f"rq:t:{rid}"))
+        markup = req_copy_kb(
+            r,
+            [toggle],
+            [btn("✏️ Комментарий", f"rq:c:{rid}"), danger_btn("🗑 Удалить", f"rq:del:{rid}")],
+            [back_btn("rq:list:0", "« К списку")],
         )
     else:
-        markup = kb([btn("« К списку", "rq:list:0")])
+        markup = req_copy_kb(r, [back_btn("rq:list:0", "« К списку")])
     return text, markup
 
 
@@ -168,7 +177,7 @@ async def req_delete_ask(cb: CallbackQuery, user):
     rid = int(cb.data.split(":")[2])
     await cb.answer()
     await show(cb, f"🗑 Удалить реквизит #{rid}? Клиенты будут отвязаны от него.",
-               kb([btn("✅ Да, удалить", f"rq:delok:{rid}"), btn("« Нет", f"rq:v:{rid}")]))
+               confirm_kb(f"rq:delok:{rid}", f"rq:v:{rid}"))
 
 
 @router.callback_query(F.data.startswith("rq:delok:"))

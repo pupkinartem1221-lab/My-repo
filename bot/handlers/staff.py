@@ -6,7 +6,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
 from ..db import DB
-from ..keyboards import BTN_STAFF, btn, cancel_kb, kb
+from ..keyboards import BTN_STAFF, back_btn, btn, cancel_kb, confirm_kb, danger_btn, kb, ok_btn, url_btn
 from ..middleware import PENDING_TTL
 from ..notify import notify_admins, send_safe
 from ..keyboards import main_kb
@@ -63,9 +63,9 @@ async def list_view(db: DB, user):
         mark = "" if status_label(u).startswith("✅") else " " + status_label(u)[:1]
         label = f"{icon} {u['nick'] or ('@' + (u['username'] or '?'))} · {u['percent']:g}%{mark}"
         buttons.append([btn(clip(label, 60), f"st:v:{u['id']}")])
-    add = [btn("➕ Сотрудник", "st:add:worker")]
+    add = [ok_btn("➕ Сотрудник", "st:add:worker")]
     if user["role"] == "owner":
-        add.append(btn("➕ Админ", "st:add:admin"))
+        add.append(ok_btn("➕ Админ", "st:add:admin"))
     buttons.append(add)
     text = ("👤 <b>Сотрудники</b>\n"
             "⏳ — не запустил бота или не указал ник · 🔔 — ждёт подтверждения · ⌛ — приглашение истекло")
@@ -110,12 +110,18 @@ async def card_view(db: DB, user, uid: int):
     )
     rows = []
     if u["tg_id"] and not u["approved"] and can_approve(user, u):
-        rows.append([btn("✅ Подтвердить доступ", f"ap:ok:{uid}"), btn("❌ Отклонить", f"ap:no:{uid}")])
+        rows.append([ok_btn("✅ Подтвердить доступ", f"ap:ok:{uid}"), danger_btn("❌ Отклонить", f"ap:no:{uid}")])
+    contact = []
+    if u["username"]:
+        contact.append(url_btn("💬 Написать", f"https://t.me/{u['username']}"))
+    elif u["tg_id"]:
+        contact.append(url_btn("💬 Написать", f"tg://user?id={u['tg_id']}"))
     if can_set_percent(user, u):
-        rows.append([btn("💯 Изменить процент", f"st:p:{uid}")])
+        contact.append(btn("💯 Процент", f"st:p:{uid}"))
+    rows.append(contact)
     if can_manage(user, u):
-        rows.append([btn("🗑 Удалить", f"st:del:{uid}")])
-    rows.append([btn("« К списку", "st:list")])
+        rows.append([danger_btn("🗑 Удалить", f"st:del:{uid}")])
+    rows.append([back_btn("st:list", "« К списку")])
     return text, kb(*rows)
 
 
@@ -271,7 +277,7 @@ async def staff_delete_ask(cb: CallbackQuery, db: DB, user):
     await cb.answer()
     await show(cb, f"🗑 Удалить {user_name(u)}? Он потеряет доступ к боту, его клиенты останутся без "
                    "сотрудника (их можно будет передать другому).",
-               kb([btn("✅ Да, удалить", f"st:delok:{uid}"), btn("« Нет", f"st:v:{uid}")]))
+               confirm_kb(f"st:delok:{uid}", f"st:v:{uid}"))
 
 
 @router.callback_query(F.data.startswith("st:delok:"))
