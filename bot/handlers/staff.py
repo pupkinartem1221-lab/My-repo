@@ -6,10 +6,9 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
 from ..db import DB
-from ..keyboards import BTN_STAFF, back_btn, btn, cancel_kb, confirm_kb, danger_btn, kb, ok_btn, url_btn
+from ..keyboards import BTN_STAFF, back_btn, btn, cancel_kb, confirm_kb, danger_btn, home_btn, kb, ok_btn, url_btn
 from ..middleware import PENDING_TTL
 from ..notify import notify_admins, send_safe
-from ..keyboards import main_kb
 from ..utils import ROLES, clip, esc, fmt_dt, is_admin, now, user_name
 from .common import show
 
@@ -67,6 +66,7 @@ async def list_view(db: DB, user):
     if user["role"] == "owner":
         add.append(ok_btn("➕ Админ", "st:add:admin"))
     buttons.append(add)
+    buttons.append([home_btn()])
     text = ("👤 <b>Сотрудники</b>\n"
             "⏳ — не запустил бота или не указал ник · 🔔 — ждёт подтверждения · ⌛ — приглашение истекло")
     return text, kb(*buttons)
@@ -76,10 +76,20 @@ async def list_view(db: DB, user):
 async def staff_menu(message: Message, state: FSMContext, db: DB, user):
     await state.clear()
     if not is_admin(user):
-        await message.answer("Нет доступа.", reply_markup=main_kb(user))
+        await message.answer("Нет доступа.")
         return
     text, markup = await list_view(db, user)
     await message.answer(text, reply_markup=markup)
+
+
+@router.callback_query(F.data == "m:staff")
+async def staff_menu_cb(cb: CallbackQuery, state: FSMContext, db: DB, user):
+    await state.clear()
+    if not is_admin(user):
+        return await cb.answer("Нет доступа", show_alert=True)
+    text, markup = await list_view(db, user)
+    await cb.answer()
+    await show(cb, text, markup)
 
 
 @router.callback_query(F.data == "st:list")

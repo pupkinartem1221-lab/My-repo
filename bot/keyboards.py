@@ -3,8 +3,6 @@ from aiogram.types import (
     DisabledButton,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    KeyboardButton,
-    ReplyKeyboardMarkup,
 )
 
 from .utils import is_admin
@@ -24,31 +22,6 @@ MENU_BUTTONS = frozenset({BTN_CLIENTS, BTN_NEW_CLIENT, BTN_RECEIPTS, BTN_REQS,
 # Цвета кнопок Telegram: зелёный — подтвердить/добавить, красный — удалить/отклонить,
 # синий — главное действие экрана. Остальные (навигация) — обычные.
 GREEN, RED, BLUE = "success", "danger", "primary"
-
-# В главном меню выделены только самые частые действия.
-_MENU_STYLE = {BTN_NEW_CLIENT: GREEN, BTN_RECEIPTS: BLUE}
-
-
-def main_kb(user) -> ReplyKeyboardMarkup:
-    if is_admin(user):
-        rows = [
-            [BTN_CLIENTS, BTN_NEW_CLIENT],
-            [BTN_RECEIPTS, BTN_REQS],
-            [BTN_REPORTS, BTN_STAFF],
-            [BTN_LOG],
-        ]
-    else:
-        rows = [
-            [BTN_CLIENTS, BTN_NEW_CLIENT],
-            [BTN_REQS, BTN_MY_STATS],
-        ]
-    return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text=t, style=_MENU_STYLE.get(t)) for t in row] for row in rows],
-        resize_keyboard=True,
-        is_persistent=True,
-        input_field_placeholder="Выберите действие в меню",
-    )
-
 
 def btn(text: str, data: str, style: str | None = None) -> InlineKeyboardButton:
     return InlineKeyboardButton(text=text, callback_data=data, style=style)
@@ -105,3 +78,23 @@ def cancel_kb() -> InlineKeyboardMarkup:
 
 def confirm_kb(yes_data: str, no_data: str, yes_text: str = "🗑 Да, удалить") -> InlineKeyboardMarkup:
     return kb([danger_btn(yes_text, yes_data), btn("Отмена", no_data)])
+
+
+def home_btn() -> InlineKeyboardButton:
+    return btn("🏠 Меню", "m:home")
+
+
+def menu_kb(user, pending: int = 0) -> InlineKeyboardMarkup:
+    """Главное меню inline-кнопками. Счётчик квитанций подсвечивается, когда есть что проверять."""
+    if is_admin(user):
+        receipts = f"🧾 Квитанции · {pending}" if pending else "🧾 Квитанции"
+        return kb(
+            [btn("👥 Клиенты", "m:clients"), ok_btn("➕ Новый клиент", "m:new")],
+            [btn(receipts, "m:receipts", BLUE if pending else None), btn("💳 Реквизиты", "m:reqs")],
+            [btn("📊 Отчёты", "m:reports"), btn("👤 Сотрудники", "m:staff")],
+            [btn("📜 Журнал", "m:log")],
+        )
+    return kb(
+        [btn("👥 Мои клиенты", "m:clients"), ok_btn("➕ Новый клиент", "m:new")],
+        [btn("💳 Реквизиты", "m:reqs"), btn("📊 Моя статистика", "m:stats")],
+    )

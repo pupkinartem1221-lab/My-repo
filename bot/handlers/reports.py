@@ -3,9 +3,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from ..db import DB
-from ..keyboards import BLUE, BTN_LOG, BTN_MY_STATS, BTN_REPORTS, btn, kb
+from ..keyboards import BLUE, BTN_LOG, BTN_MY_STATS, BTN_REPORTS, btn, home_btn, kb
 from ..reports import PERIODS, admin_report, period, worker_report
-from ..keyboards import main_kb
 from ..utils import esc, fmt_dt, fmt_money, is_admin, user_name
 from .common import show
 
@@ -16,17 +15,27 @@ def periods_kb(active: str = "today"):
     """Выбранный период подсвечен синим."""
     items = list(PERIODS.items())
     return kb(*[[btn(v, f"rep:{k}", BLUE if k == active else None) for k, v in items[i:i + 2]]
-                for i in range(0, len(items), 2)])
+                for i in range(0, len(items), 2)], [home_btn()])
 
 
 @router.message(F.text == BTN_REPORTS)
 async def reports_menu(message: Message, state: FSMContext, db: DB, user):
     await state.clear()
     if not is_admin(user):
-        await message.answer("Нет доступа.", reply_markup=main_kb(user))
+        await message.answer("Нет доступа.")
         return
     s, e, title = period("today")
     await message.answer(await admin_report(db, s, e, f"Отчёт: {title}"), reply_markup=periods_kb())
+
+
+@router.callback_query(F.data == "m:reports")
+async def reports_menu_cb(cb: CallbackQuery, state: FSMContext, db: DB, user):
+    await state.clear()
+    if not is_admin(user):
+        return await cb.answer("Нет доступа", show_alert=True)
+    s, e, title = period("today")
+    await cb.answer()
+    await show(cb, await admin_report(db, s, e, f"Отчёт: {title}"), periods_kb())
 
 
 @router.callback_query(F.data.startswith("rep:"))
@@ -56,18 +65,32 @@ async def my_stats(message: Message, state: FSMContext, db: DB, user):
               f"Клиентов: {clients['n']} (в работе {clients['w'] or 0}, оплачено {clients['p'] or 0}, "
               f"слив {clients['l'] or 0})\n"
               f"⏳ Ждут подтверждения: {pend['n']} на {fmt_money(pend['s'])}")
-    await message.answer(header + "\n\n" + "\n\n".join(parts))
+    await message.answer(header + "\n\n" + "\n\n".join(parts), reply_markup=kb([home_btn()]))
+
+
+@router.callback_query(F.data == "m:stats")
+async def my_stats_cb(cb: CallbackQuery, state: FSMContext, db: DB, user):
+    await cb.answer()
+    await my_stats(cb.message, state, db, user)
+
+
+@router.callback_query(F.data == "m:log")
+async def audit_log_cb(cb: CallbackQuery, state: FSMContext, db: DB, user):
+    if not is_admin(user):
+        return await cb.answer("Нет доступа", show_alert=True)
+    await cb.answer()
+    await audit_log(cb.message, state, db, user)
 
 
 @router.message(F.text == BTN_LOG)
 async def audit_log(message: Message, state: FSMContext, db: DB, user):
     await state.clear()
     if not is_admin(user):
-        await message.answer("Нет доступа.", reply_markup=main_kb(user))
+        await message.answer("Нет доступа.")
         return
     rows = await db.all("SELECT * FROM audit ORDER BY id DESC LIMIT 40")
     if not rows:
-        await message.answer("📜 Журнал пуст.")
+        await message.answer("📜 Журнал пуст.", reply_markup=kb([home_btn()]))
         return
     lines = ["📜 <b>Последние действия</b>\n"]
     for r in rows:
@@ -78,5 +101,6 @@ async def audit_log(message: Message, state: FSMContext, db: DB, user):
         cut = text[:4000].rfind("\n") if len(text) > 4000 else len(text)
         if cut <= 0:
             cut = min(len(text), 4000)
-        await message.answer(text[:cut])
+        last = cut >= len(text)
+        await message.answer(text[:cut], reply_markup=kb([home_btn()]) if last else None)
         text = text[cut:].lstrip("\n")

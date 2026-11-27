@@ -6,7 +6,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
 from ..db import DB
-from ..keyboards import (BTN_REQS, back_btn, btn, cancel_kb, confirm_kb, copy_btn, danger_btn, kb,
+from ..keyboards import (BTN_REQS, back_btn, btn, cancel_kb, confirm_kb, copy_btn, danger_btn, home_btn, kb,
                          ok_btn, pager)
 from ..notify import notify_admins, notify_all
 from ..utils import clip, day_range, esc, fmt_dt, fmt_money, iban_ok, ipn_checksum_ok, is_admin, now, today, user_name
@@ -77,6 +77,7 @@ async def list_view(db: DB, user, page: int = 0):
     buttons.append(pager("rq:list:", page, pages))
     if admin:
         buttons.append([ok_btn("➕ Добавить реквизит", "rq:add")])
+    buttons.append([home_btn()])
     return text, kb(*buttons)
 
 
@@ -85,6 +86,14 @@ async def reqs_menu(message: Message, state: FSMContext, db: DB, user):
     await state.clear()
     text, markup = await list_view(db, user)
     await message.answer(text, reply_markup=markup)
+
+
+@router.callback_query(F.data == "m:reqs")
+async def reqs_menu_cb(cb: CallbackQuery, state: FSMContext, db: DB, user):
+    await state.clear()
+    text, markup = await list_view(db, user)
+    await cb.answer()
+    await show(cb, text, markup)
 
 
 @router.callback_query(F.data.startswith("rq:list"))
