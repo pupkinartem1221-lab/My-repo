@@ -14,7 +14,7 @@ CLIENT_STATUSES = {
     "lost": "❌ Слив",
 }
 PAYMENT_STATUSES = {
-    "pending": "⏳ Ожидает подтверждения",
+    "pending": "⏳ На проверке",
     "confirmed": "✅ Подтверждена",
     "rejected": "❌ Отклонена",
 }
@@ -37,6 +37,12 @@ def fmt_dt(ts: int | None) -> str:
     if not ts:
         return "—"
     return datetime.fromtimestamp(ts, TZ).strftime("%d.%m.%Y %H:%M")
+
+
+def fmt_short(ts: int | None) -> str:
+    if not ts:
+        return "—"
+    return datetime.fromtimestamp(ts, TZ).strftime("%d.%m %H:%M")
 
 
 def fmt_money(kop: int | float | None) -> str:

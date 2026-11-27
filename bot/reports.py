@@ -7,9 +7,9 @@ PERIODS = {
     "today": "Сегодня",
     "yesterday": "Вчера",
     "week": "7 дней",
-    "month": "Этот месяц",
+    "month": "Месяц",
     "prevmonth": "Прошлый месяц",
-    "all": "За всё время",
+    "all": "Всё время",
 }
 
 
@@ -43,10 +43,7 @@ async def admin_report(db: DB, start: int, end: int, title: str) -> str:
         f"SELECT COUNT(*) n, COALESCE(SUM(p.amount),0) s, {SHARE} sh FROM payments p "
         "WHERE p.status='confirmed' AND p.reviewed_at>=? AND p.reviewed_at<?", start, end)
     pend = await db.one("SELECT COUNT(*) n, COALESCE(SUM(amount),0) s FROM payments WHERE status='pending'")
-    new_clients = await db.one(
-        "SELECT COUNT(*) n FROM clients WHERE created_at>=? AND created_at<?", start, end)
-    statuses = await db.one(
-        "SELECT SUM(status='work') w, SUM(status='paid') p, SUM(status='lost') l FROM clients")
+    new_clients = await db.one("SELECT COUNT(*) n FROM clients WHERE created_at>=? AND created_at<?", start, end)
     by_worker = await db.all(
         f"SELECT p.worker_id wid, u.nick, u.username, COUNT(*) n, SUM(p.amount) s, {SHARE} sh "
         "FROM payments p LEFT JOIN users u ON u.id=p.worker_id "
@@ -60,52 +57,51 @@ async def admin_report(db: DB, start: int, end: int, title: str) -> str:
 
     lines = [
         f"📊 <b>{esc(title)}</b>\n",
-        f"💰 Оплачено клиентами: <b>{fmt_money(tot['s'])}</b> ({tot['n']} опл.)",
-        f"👷 Доля сотрудников: {fmt_money(tot['sh'])}",
+        f"💰 Оплачено: <b>{fmt_money(tot['s'])}</b> · {tot['n']} опл.",
+        f"👷 Сотрудникам: {fmt_money(tot['sh'])}",
         f"🏦 Остаток: <b>{fmt_money(tot['s'] - tot['sh'])}</b>",
-        f"⏳ Ждут подтверждения (сейчас): {pend['n']} на {fmt_money(pend['s'])}",
         f"🆕 Новых клиентов: {new_clients['n']}",
-        f"👥 Клиенты сейчас: в работе {statuses['w'] or 0} · оплачено {statuses['p'] or 0} · "
-        f"слив {statuses['l'] or 0}",
     ]
+    if pend["n"]:
+        lines.append(f"⏳ Сейчас на проверке: {pend['n']} · {fmt_money(pend['s'])}")
     if by_worker:
-        lines.append("\n<b>По сотрудникам:</b>")
+        lines.append("\n<b>Сотрудники</b>")
         for r in by_worker:
-            name = esc(r["nick"] or r["username"] or (f"id{r['wid']}" if r["wid"] else "удалённый сотрудник"))
-            lines.append(f"• {name}: {fmt_money(r['s'])} ({r['n']}) → заработок {fmt_money(r['sh'])}")
+            name = esc(r["nick"] or r["username"] or (f"id{r['wid']}" if r["wid"] else "удалён"))
+            lines.append(f"• {name}: {fmt_money(r['s'])} → 💵 {fmt_money(r['sh'])}")
     if by_req:
-        lines.append("\n<b>По реквизитам:</b>")
+        lines.append("\n<b>Реквизиты</b>")
         for r in by_req:
             if r["id"]:
-                name = f"#{r['id']} …{esc(r['iban'][-8:])} ({esc(r['holder'])})"
+                name = f"…{esc(r['iban'][-6:])} {esc(r['holder'])}"
             elif r["label"]:
                 name = f"{esc(r['label'])} (удалён)"
             else:
                 name = "без реквизита"
-            lines.append(f"• {name}: {fmt_money(r['s'])} ({r['n']})")
+            lines.append(f"• {name}: {fmt_money(r['s'])}")
+    if not tot["n"]:
+        lines.append("\n<i>Подтверждённых оплат за период нет.</i>")
     return fit(lines)
 
 
-async def worker_report(db: DB, user, start: int, end: int, title: str, with_pending: bool = True) -> str:
-    tot = await db.one(
+async def worker_totals(db: DB, user, start: int, end: int):
+    return await db.one(
         f"SELECT COUNT(*) n, COALESCE(SUM(p.amount),0) s, {SHARE} sh FROM payments p "
         "WHERE p.worker_id=? AND p.status='confirmed' AND p.reviewed_at>=? AND p.reviewed_at<?",
         user["id"], start, end)
-    pend = await db.one(
-        "SELECT COUNT(*) n, COALESCE(SUM(amount),0) s FROM payments WHERE worker_id=? AND status='pending'",
-        user["id"])
+
+
+async def worker_report(db: DB, user, start: int, end: int, title: str) -> str:
+    tot = await worker_totals(db, user, start, end)
     new_clients = await db.one(
         "SELECT COUNT(*) n FROM clients WHERE worker_id=? AND created_at>=? AND created_at<?",
         user["id"], start, end)
-    text = (
-        f"📊 <b>{esc(title)}</b>\n"
-        f"💰 Оплачено вашими клиентами: {fmt_money(tot['s'])} ({tot['n']} опл.)\n"
+    return (
+        f"📊 <b>{esc(title)}</b>\n\n"
         f"💵 Ваш заработок: <b>{fmt_money(tot['sh'])}</b>\n"
+        f"💰 Оплатили клиенты: {fmt_money(tot['s'])} · {tot['n']} опл.\n"
         f"🆕 Новых клиентов: {new_clients['n']}"
     )
-    if with_pending:
-        text += f"\n⏳ Ждут подтверждения: {pend['n']} на {fmt_money(pend['s'])}"
-    return text
 
 
 def day_title(d: date) -> str:

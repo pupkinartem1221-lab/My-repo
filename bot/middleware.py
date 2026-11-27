@@ -3,8 +3,9 @@ from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove, TelegramObject
+from aiogram.types import CallbackQuery, Message, TelegramObject
 
+from . import ui
 from .db import DB
 from .keyboards import MENU_BUTTONS, danger_btn, kb, ok_btn
 from .notify import notify_admins
@@ -17,11 +18,8 @@ class NickForm(StatesGroup):
     nick = State()
 
 
-NICK_PROMPT = (
-    "👋 Добро пожаловать в CRM!\n\n"
-    "Для начала работы введите ваш <b>ник в CRM</b> (он будет виден в отчётах):"
-)
-WAIT_TEXT = "⏳ Ваш доступ ожидает подтверждения администратором. Мы сообщим, когда он будет открыт."
+NICK_PROMPT = "👋 Добро пожаловать!\n\nПридумайте <b>ник</b> — так вас будут видеть в CRM:"
+WAIT_TEXT = "⏳ Доступ ждёт подтверждения админа. Мы напишем, когда он откроется."
 
 
 async def _claim_username(db: DB, username: str, user_id: int) -> None:
@@ -50,11 +48,10 @@ async def resolve_user(db: DB, tg_user, bot):
                 return await db.one("SELECT * FROM users WHERE tg_id=?", tg_user.id)
             await db.audit(pending["id"], f"Подключился к боту (@{username}), ждёт подтверждения")
             text = (
-                f"🔔 <b>Запрос доступа</b>\n"
-                f"{ROLES[pending['role']]} @{esc(username)}\n"
-                f"Имя в Telegram: {esc(tg_user.full_name)}\n"
-                f"Telegram ID: <code>{tg_user.id}</code>\n\n"
-                "Убедитесь, что это нужный человек, и подтвердите доступ."
+                f"🔔 <b>Запрос доступа</b> · {ROLES[pending['role']]}\n\n"
+                f"@{esc(username)} · {esc(tg_user.full_name)}\n"
+                f"ID: <code>{tg_user.id}</code>\n\n"
+                "Это нужный человек?"
             )
             markup = kb([ok_btn("✅ Подтвердить", f"ap:ok:{pending['id']}"),
                          danger_btn("❌ Отклонить", f"ap:no:{pending['id']}")])
@@ -97,7 +94,7 @@ class AccessMiddleware(BaseMiddleware):
             if isinstance(event, CallbackQuery):
                 await event.answer(WAIT_TEXT, show_alert=True)
             else:
-                await event.answer(WAIT_TEXT, reply_markup=ReplyKeyboardRemove())
+                await ui.show(event, WAIT_TEXT)
             return None
 
         state = data["state"]
@@ -107,9 +104,7 @@ class AccessMiddleware(BaseMiddleware):
             await state.set_state(NickForm.nick)
             if isinstance(event, CallbackQuery):
                 await event.answer()
-                await data["bot"].send_message(tg_user.id, NICK_PROMPT)
-            else:
-                await event.answer(NICK_PROMPT, reply_markup=ReplyKeyboardRemove())
+            await ui.show(event, NICK_PROMPT)
             return None
 
         # Кнопка главного меню всегда прерывает текущий диалог (иначе её текст

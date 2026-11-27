@@ -34,7 +34,7 @@ async def send_daily(bot: Bot, db: DB, d: date) -> None:
         if last is not None and last >= day:
             return
         start, end = day_range(d)
-        title = f"🌙 Итог дня {day_title(d)}"
+        title = f"🌙 Итог дня · {day_title(d)}"
         users = await db.all(
             "SELECT * FROM users WHERE tg_id IS NOT NULL AND nick IS NOT NULL AND approved=1")
         done = {r["tg_id"] for r in await db.all("SELECT tg_id FROM daily_sent WHERE day=?", day)}
