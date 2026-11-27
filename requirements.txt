@@ -1,0 +1,6 @@
+# Прямые зависимости. Точные версии с хешами — в requirements.lock
+# (обновление: pip-compile --generate-hashes --strip-extras -o requirements.lock requirements.txt)
+aiogram==3.13.1
+aiosqlite==0.20.0
+cryptography==50.0.1
+tzdata==2024.2
