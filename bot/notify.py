@@ -8,7 +8,7 @@ from aiogram.exceptions import (
     TelegramNetworkError,
     TelegramRetryAfter,
 )
-from aiogram.types import InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from .db import DB
 
@@ -35,12 +35,25 @@ async def _deliver(factory) -> bool:
     return False
 
 
+HIDE = InlineKeyboardButton(text="✖️ Скрыть", callback_data="hide")
+
+
+def with_hide(markup: InlineKeyboardMarkup | None) -> InlineKeyboardMarkup:
+    """У каждого уведомления есть кнопка «Скрыть», чтобы оно не засоряло чат."""
+    rows = list(markup.inline_keyboard) if markup else []
+    if not any(b.callback_data == "hide" for r in rows for b in r):
+        rows.append([HIDE])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 async def send_safe(bot: Bot, chat_id: int, text: str, reply_markup=None) -> bool:
-    return await _deliver(lambda: bot.send_message(chat_id, text, reply_markup=reply_markup))
+    markup = with_hide(reply_markup)
+    return await _deliver(lambda: bot.send_message(chat_id, text, reply_markup=markup))
 
 
 async def send_file_safe(bot: Bot, chat_id: int, file_id: str, file_type: str,
                          caption: str, reply_markup: InlineKeyboardMarkup | None = None) -> bool:
+    reply_markup = with_hide(reply_markup)
     if file_type == "photo":
         return await _deliver(lambda: bot.send_photo(chat_id, file_id, caption=caption,
                                                      reply_markup=reply_markup))

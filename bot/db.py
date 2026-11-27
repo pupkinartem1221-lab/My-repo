@@ -98,6 +98,8 @@ MIGRATIONS = [
     "WHERE r.id = payments.requisite_id);",
     # 4: кому уже отправлен итог дня (защита от дублей)
     "CREATE TABLE IF NOT EXISTS daily_sent (day TEXT NOT NULL, tg_id INTEGER NOT NULL, PRIMARY KEY (day, tg_id));",
+    # 5: «одно окно» — какое сообщение бота сейчас экран пользователя и какие временные сообщения убрать
+    "CREATE TABLE IF NOT EXISTS ui (tg_id INTEGER PRIMARY KEY, screen_id INTEGER, aux TEXT NOT NULL DEFAULT '[]');",
 ]
 
 

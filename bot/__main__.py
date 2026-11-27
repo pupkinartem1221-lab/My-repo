@@ -10,7 +10,7 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import SimpleEventIsolation
 from aiogram.types import BotCommand, ErrorEvent, MenuButtonCommands
 
-from . import scheduler
+from . import scheduler, ui
 from .config import load_config
 from .db import DB
 from .fsm_storage import SQLiteStorage
@@ -135,6 +135,7 @@ def build_dispatcher(db: DB, cfg) -> Dispatcher:
     dp.include_routers(common.router, clients.router, payments.router, requisites.router,
                        staff.router, reports.router, fallback.router)
     dp.errors.register(on_error)
+    ui.init(db)
     return dp
 
 
