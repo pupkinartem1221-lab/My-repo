@@ -6,12 +6,13 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
 from ..db import DB
-from ..keyboards import BTN_CLIENTS, BTN_NEW_CLIENT, btn, cancel_kb, kb
+from ..keyboards import (BLUE, BTN_CLIENTS, BTN_NEW_CLIENT, GREEN, RED, back_btn, btn, cancel_kb, confirm_kb,
+                         copy_btn, danger_btn, kb, main_btn, pager)
 from ..notify import notify_admins, notify_user
 from ..utils import (CLIENT_STATUSES, clip, esc, fit, fmt_dt, fmt_money, is_admin, like_escape, now,
                      user_label, user_name)
 from .common import show
-from .requisites import req_for_client, req_short
+from .requisites import req_copy_kb, req_for_client, req_short
 
 router = Router(name="clients")
 PAGE = 8
@@ -76,14 +77,11 @@ async def list_view(db: DB, user, flt: str, page: int):
     else:
         text += "\n\nКлиентов нет."
 
-    flt_row = [btn(("• " if k == flt else "") + v.split(" ")[0], f"cl:l:{k}:0")
+    # активный фильтр подсвечен синим
+    flt_row = [btn(v if k == "all" else v.split(" ")[0], f"cl:l:{k}:0", BLUE if k == flt else None)
                for k, v in FILTERS.items()]
-    nav = []
-    if page > 0:
-        nav.append(btn("◀️", f"cl:l:{flt}:{page - 1}"))
-    if page < pages - 1:
-        nav.append(btn("▶️", f"cl:l:{flt}:{page + 1}"))
-    markup = kb(flt_row, *[client_btn(c) for c in rows], nav, [btn("🔍 Поиск", "cl:search")])
+    markup = kb(flt_row, *[client_btn(c) for c in rows], pager(f"cl:l:{flt}:", page, pages),
+                [btn("🔍 Поиск", "cl:search")])
     return text, markup
 
 
@@ -173,17 +171,22 @@ async def card_view(db: DB, user, c):
             lines.extend(reversed(items))
 
     cid = c["id"]
-    status_row = [btn(("✔️ " if k == c["status"] else "") + v, f"cl:st:{cid}:{k}")
+    # текущий статус подсвечен своим цветом, остальные — обычные
+    colors = {"work": BLUE, "paid": GREEN, "lost": RED}
+    status_row = [btn(("✔️ " if k == c["status"] else "") + v, f"cl:st:{cid}:{k}",
+                      colors[k] if k == c["status"] else None)
                   for k, v in CLIENT_STATUSES.items()]
     rows = [
-        status_row[:2], status_row[2:],
+        status_row,
+        [main_btn("🧾 Добавить квитанцию", f"pay:new:{cid}")],
+        [btn("💳 Реквизит", f"cl:rq:{cid}"), btn(f"💰 Оплаты ({sums['n']})", f"pay:cl:{cid}")],
         [btn("💬 Комментарий", f"cl:cm:{cid}"), btn("📝 Все комментарии", f"cl:cma:{cid}")],
-        [btn("💳 Реквизит", f"cl:rq:{cid}"), btn("🧾 Добавить квитанцию", f"pay:new:{cid}")],
-        [btn(f"💰 Оплаты ({sums['n']})", f"pay:cl:{cid}")],
     ]
+    if c["phone"]:
+        rows.append([copy_btn("📋 Скопировать телефон", c["phone"])])
     if is_admin(user):
-        rows.append([btn("👤 Сменить сотрудника", f"cl:w:{cid}"), btn("🗑 Удалить", f"cl:del:{cid}")])
-    rows.append([btn("« К списку", "cl:l:all:0")])
+        rows.append([btn("👤 Сменить сотрудника", f"cl:w:{cid}"), danger_btn("🗑 Удалить", f"cl:del:{cid}")])
+    rows.append([back_btn("cl:l:all:0", "« К списку")])
     return fit(lines), kb(*rows)
 
 
@@ -281,7 +284,7 @@ async def comments_all(cb: CallbackQuery, db: DB, user):
             await cb.message.answer(chunk)
             chunk = ""
         chunk += line
-    await cb.message.answer(chunk, reply_markup=kb([btn("« К клиенту", f"cl:v:{c['id']}")]))
+    await cb.message.answer(chunk, reply_markup=kb([back_btn(f"cl:v:{c['id']}", "« К клиенту")]))
 
 
 # --- реквизит клиента ---
@@ -295,9 +298,9 @@ async def client_req_pick(cb: CallbackQuery, db: DB, user):
     rows = [[btn(clip(f"🟢 #{r['id']} {r['iban'][-8:]} · {r['holder']}", 60), f"cl:rqs:{c['id']}:{r['id']}")]
             for r in reqs]
     if c["requisite_id"]:
-        rows.append([btn("📋 Показать текущий для клиента", f"cl:rqshow:{c['id']}")])
-        rows.append([btn("✖️ Отвязать реквизит", f"cl:rqs:{c['id']}:0")])
-    rows.append([btn("« К клиенту", f"cl:v:{c['id']}")])
+        rows.append([main_btn("📋 Реквизит для отправки клиенту", f"cl:rqshow:{c['id']}")])
+        rows.append([danger_btn("✖️ Отвязать реквизит", f"cl:rqs:{c['id']}:0")])
+    rows.append([back_btn(f"cl:v:{c['id']}", "« К клиенту")])
     text = f"💳 Выберите рабочий реквизит для клиента #{c['id']} {esc(c['name'])}:"
     if not reqs:
         text = "Нет рабочих реквизитов. Обратитесь к админу."
@@ -324,7 +327,7 @@ async def client_req_set(cb: CallbackQuery, db: DB, user):
     text, markup = await card_view(db, user, c)
     await show(cb, text, markup)
     if r is not None:
-        await cb.message.answer(req_for_client(r))
+        await cb.message.answer(req_for_client(r), reply_markup=req_copy_kb(r))
 
 
 @router.callback_query(F.data.startswith("cl:rqshow:"))
@@ -337,7 +340,7 @@ async def client_req_show(cb: CallbackQuery, db: DB, user):
     if not r["is_active"]:
         await cb.message.answer("⚠️ Этот реквизит сейчас <b>не рабочий</b>! Выберите другой.")
         return
-    await cb.message.answer(req_for_client(r))
+    await cb.message.answer(req_for_client(r), reply_markup=req_copy_kb(r))
 
 
 # --- смена сотрудника / удаление (админ) ---
@@ -349,7 +352,7 @@ async def client_worker_pick(cb: CallbackQuery, db: DB, user):
     cid = int(cb.data.split(":")[2])
     staff = await db.all("SELECT * FROM users WHERE nick IS NOT NULL AND approved=1 ORDER BY role DESC, nick LIMIT 90")
     rows = [[btn(clip(user_label(u), 60), f"cl:ws:{cid}:{u['id']}")] for u in staff]
-    rows.append([btn("« К клиенту", f"cl:v:{cid}")])
+    rows.append([back_btn(f"cl:v:{cid}", "« К клиенту")])
     await cb.answer()
     await show(cb, f"👤 Выберите сотрудника для клиента #{cid}:", kb(*rows))
 
@@ -376,7 +379,7 @@ async def client_worker_set(cb: CallbackQuery, db: DB, user, bot: Bot):
     if worker["id"] != user["id"]:
         await notify_user(bot, db, worker["id"],
                           f"📥 Вам передан клиент #{c['id']} {esc(c['name'])}.",
-                          kb([btn("Открыть", f"cl:v:{c['id']}")]))
+                          kb([main_btn("👤 Открыть клиента", f"cl:v:{c['id']}")]))
     await cb.answer("Сохранено")
     c = await db.one("SELECT * FROM clients WHERE id=?", c["id"])
     text, markup = await card_view(db, user, c)
@@ -391,7 +394,7 @@ async def client_delete_ask(cb: CallbackQuery, user):
     await cb.answer()
     await show(cb, f"🗑 Удалить клиента #{cid} вместе с комментариями?\n"
                    "Подтверждённые оплаты останутся в отчётах.",
-               kb([btn("✅ Да, удалить", f"cl:delok:{cid}"), btn("« Нет", f"cl:v:{cid}")]))
+               confirm_kb(f"cl:delok:{cid}", f"cl:v:{cid}"))
 
 
 @router.callback_query(F.data.startswith("cl:delok:"))
@@ -461,7 +464,8 @@ async def new_client_comment(message: Message, state: FSMContext, db: DB, user, 
     if is_admin(user):
         staff = await db.all(
             "SELECT * FROM users WHERE nick IS NOT NULL AND approved=1 ORDER BY role DESC, nick LIMIT 90")
-        rows = [[btn(("🙋 Себе" if u["id"] == user["id"] else clip(user_label(u), 60)), f"nc:w:{u['id']}")]
+        rows = [[btn(("🙋 Себе" if u["id"] == user["id"] else clip(user_label(u), 60)), f"nc:w:{u['id']}",
+                     BLUE if u["id"] == user["id"] else None)]
                 for u in staff]
         rows.append([btn("✖️ Отмена", "cancel")])
         await state.set_state(NewClient.worker)
@@ -509,9 +513,9 @@ async def create_client(message: Message, state: FSMContext, db: DB, user, bot: 
         f"🆕 Новый клиент #{cid} {esc(data['name'])}, <code>{esc(data['phone'])}</code>\n"
         f"Сотрудник: {user_name(worker)} · добавил: {user_name(user)}",
         exclude_user_id=user["id"],
-        reply_markup=kb([btn("Открыть", f"cl:v:{cid}")]),
+        reply_markup=kb([main_btn("👤 Открыть клиента", f"cl:v:{cid}")]),
     )
     if worker and worker["id"] != user["id"] and worker["role"] == "worker":
         await notify_user(bot, db, worker["id"], f"📥 Вам назначен новый клиент #{cid} {esc(data['name'])}.",
-                          kb([btn("Открыть", f"cl:v:{cid}")]))
+                          kb([main_btn("👤 Открыть клиента", f"cl:v:{cid}")]))
     await send_card(message, db, user, cid, "✅ Клиент добавлен.\n\n")

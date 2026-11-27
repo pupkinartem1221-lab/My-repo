@@ -6,7 +6,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove, TelegramObject
 
 from .db import DB
-from .keyboards import MENU_BUTTONS, btn, kb
+from .keyboards import MENU_BUTTONS, danger_btn, kb, ok_btn
 from .notify import notify_admins
 from .utils import ROLES, esc
 
@@ -56,8 +56,8 @@ async def resolve_user(db: DB, tg_user, bot):
                 f"Telegram ID: <code>{tg_user.id}</code>\n\n"
                 "Убедитесь, что это нужный человек, и подтвердите доступ."
             )
-            markup = kb([btn("✅ Подтвердить", f"ap:ok:{pending['id']}"),
-                         btn("❌ Отклонить", f"ap:no:{pending['id']}")])
+            markup = kb([ok_btn("✅ Подтвердить", f"ap:ok:{pending['id']}"),
+                         danger_btn("❌ Отклонить", f"ap:no:{pending['id']}")])
             await notify_admins(bot, db, text, reply_markup=markup,
                                 owner_only=pending["role"] == "admin")
             row = await db.one("SELECT * FROM users WHERE id=?", pending["id"])
