@@ -16,6 +16,9 @@ BTN_STAFF = "👤 Сотрудники"
 BTN_LOG = "📜 Журнал"
 BTN_MY_STATS = "📊 Моя статистика"
 
+MENU_BUTTONS = frozenset({BTN_CLIENTS, BTN_NEW_CLIENT, BTN_RECEIPTS, BTN_REQS,
+                          BTN_REPORTS, BTN_STAFF, BTN_LOG, BTN_MY_STATS})
+
 
 def main_kb(user) -> ReplyKeyboardMarkup:
     if is_admin(user):

@@ -28,6 +28,9 @@ class SQLiteStorage(BaseStorage):
 
     async def set_state(self, key: StorageKey, state: StateType = None) -> None:
         value = state.state if isinstance(state, State) else state
+        row = await self.db.one("SELECT state FROM fsm WHERE key=?", self._key(key))
+        if (row["state"] if row else None) == value:
+            return  # ничего не изменилось — не трогаем базу (и не запускаем сохранение)
         await self.db.run(
             "INSERT INTO fsm(key, state) VALUES (?, ?) "
             "ON CONFLICT(key) DO UPDATE SET state=excluded.state",
@@ -39,10 +42,15 @@ class SQLiteStorage(BaseStorage):
         return row["state"] if row else None
 
     async def set_data(self, key: StorageKey, data: Mapping[str, Any]) -> None:
+        payload = json.dumps(dict(data), ensure_ascii=False)
+        row = await self.db.one("SELECT data FROM fsm WHERE key=?", self._key(key))
+        current = row["data"] if row else None
+        if current == payload or (current in (None, "{}") and payload == "{}"):
+            return
         await self.db.run(
             "INSERT INTO fsm(key, data) VALUES (?, ?) "
             "ON CONFLICT(key) DO UPDATE SET data=excluded.data",
-            self._key(key), json.dumps(dict(data), ensure_ascii=False),
+            self._key(key), payload,
         )
 
     async def get_data(self, key: StorageKey) -> dict[str, Any]:

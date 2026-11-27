@@ -5,7 +5,8 @@ from aiogram.types import CallbackQuery, Message
 from ..db import DB
 from ..keyboards import BTN_LOG, BTN_MY_STATS, BTN_REPORTS, btn, kb
 from ..reports import PERIODS, admin_report, period, worker_report
-from ..utils import esc, fmt_dt, is_admin, user_name
+from ..keyboards import main_kb
+from ..utils import esc, fmt_dt, fmt_money, is_admin, user_name
 from .common import show
 
 router = Router(name="reports")
@@ -20,6 +21,7 @@ def periods_kb():
 async def reports_menu(message: Message, state: FSMContext, db: DB, user):
     await state.clear()
     if not is_admin(user):
+        await message.answer("Нет доступа.", reply_markup=main_kb(user))
         return
     s, e, title = period("today")
     await message.answer(await admin_report(db, s, e, f"Отчёт: {title}"), reply_markup=periods_kb())
@@ -41,13 +43,16 @@ async def my_stats(message: Message, state: FSMContext, db: DB, user):
     parts = []
     for kind, label in (("today", "Сегодня"), ("month", "Этот месяц"), ("all", "За всё время")):
         s, e, _ = period(kind)
-        parts.append(await worker_report(db, user, s, e, label))
+        parts.append(await worker_report(db, user, s, e, label, with_pending=False))
     clients = await db.one(
         "SELECT COUNT(*) n, SUM(status='work') w, SUM(status='paid') p, SUM(status='lost') l "
         "FROM clients WHERE worker_id=?", user["id"])
+    pend = await db.one("SELECT COUNT(*) n, COALESCE(SUM(amount),0) s FROM payments "
+                        "WHERE worker_id=? AND status='pending'", user["id"])
     header = (f"👷 <b>{esc(user['nick'])}</b> · ваш процент: {user['percent']:g}%\n"
               f"Клиентов: {clients['n']} (в работе {clients['w'] or 0}, оплачено {clients['p'] or 0}, "
-              f"слив {clients['l'] or 0})")
+              f"слив {clients['l'] or 0})\n"
+              f"⏳ Ждут подтверждения: {pend['n']} на {fmt_money(pend['s'])}")
     await message.answer(header + "\n\n" + "\n\n".join(parts))
 
 
@@ -55,6 +60,7 @@ async def my_stats(message: Message, state: FSMContext, db: DB, user):
 async def audit_log(message: Message, state: FSMContext, db: DB, user):
     await state.clear()
     if not is_admin(user):
+        await message.answer("Нет доступа.", reply_markup=main_kb(user))
         return
     rows = await db.all("SELECT * FROM audit ORDER BY id DESC LIMIT 40")
     if not rows:
@@ -67,5 +73,7 @@ async def audit_log(message: Message, state: FSMContext, db: DB, user):
     text = "\n".join(lines)
     while text:
         cut = text[:4000].rfind("\n") if len(text) > 4000 else len(text)
+        if cut <= 0:
+            cut = min(len(text), 4000)
         await message.answer(text[:cut])
         text = text[cut:].lstrip("\n")

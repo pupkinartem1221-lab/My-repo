@@ -8,7 +8,8 @@ from aiogram.types import CallbackQuery, Message
 from ..db import DB
 from ..keyboards import BTN_CLIENTS, BTN_NEW_CLIENT, btn, cancel_kb, kb
 from ..notify import notify_admins, notify_user
-from ..utils import CLIENT_STATUSES, esc, fmt_dt, fmt_money, is_admin, now, user_name
+from ..utils import (CLIENT_STATUSES, clip, esc, fit, fmt_dt, fmt_money, is_admin, like_escape, now,
+                     user_label, user_name)
 from .common import show
 from .requisites import req_for_client, req_short
 
@@ -45,7 +46,7 @@ async def get_client_for(db: DB, user, cid: int):
 
 def client_btn(c) -> list:
     icon = CLIENT_STATUSES.get(c["status"], "")[:1]
-    label = f"{icon} #{c['id']} {c['name'][:28]}"
+    label = f"{icon} #{c['id']} {clip(c['name'], 28)}"
     if c["phone"]:
         label += f" · {c['phone'][-10:]}"
     return [btn(label, f"cl:v:{c['id']}")]
@@ -104,16 +105,22 @@ async def clients_list_cb(cb: CallbackQuery, db: DB, user):
 @router.callback_query(F.data == "cl:search")
 async def search_start(cb: CallbackQuery, state: FSMContext):
     await state.set_state(ClientSearch.query)
+    await state.set_data({})
     await cb.answer()
     await cb.message.answer("Введите имя или телефон клиента для поиска:", reply_markup=cancel_kb())
 
 
 @router.message(ClientSearch.query, F.text)
 async def search_do(message: Message, state: FSMContext, db: DB, user):
-    q = message.text.strip()
+    q = " ".join(message.text.split())
+    if len(q) < 2:
+        await message.answer("Введите хотя бы 2 символа:", reply_markup=cancel_kb())
+        return
     digits = re.sub(r"\D", "", q)
-    sql = f"SELECT * FROM clients WHERE (lower(name) LIKE ? OR (? <> '' AND {PHONE} LIKE ?))"
-    params = [f"%{q.lower()}%", digits, f"%{digits}%"]
+    if len(digits) < 3:
+        digits = ""
+    sql = f"SELECT * FROM clients WHERE (ulower(name) LIKE ? ESCAPE '\\' OR (? <> '' AND {PHONE} LIKE ?))"
+    params = [f"%{like_escape(q.lower())}%", digits, f"%{digits}%"]
     if not is_admin(user):
         sql += " AND worker_id=?"
         params.append(user["id"])
@@ -137,6 +144,7 @@ async def card_view(db: DB, user, c):
         "FROM payments WHERE client_id=?", c["id"])
     comments = await db.all(
         "SELECT * FROM comments WHERE client_id=? ORDER BY id DESC LIMIT 5", c["id"])
+    total_comments = (await db.one("SELECT COUNT(*) n FROM comments WHERE client_id=?", c["id"]))["n"]
 
     lines = [
         f"👤 <b>Клиент #{c['id']}</b>",
@@ -150,10 +158,19 @@ async def card_view(db: DB, user, c):
         f"Создан: {fmt_dt(c['created_at'])}",
     ]
     if comments:
-        lines.append("\n💬 <b>Последние комментарии:</b>")
-        for cm in reversed(comments):
+        # новые комментарии важнее: при нехватке места отбрасываются самые старые
+        items, budget = [], 3800 - sum(len(x) + 1 for x in lines)
+        for cm in comments:
             author = await db.get_user(cm["author_id"])
-            lines.append(f"• <i>{fmt_dt(cm['created_at'])}, {user_name(author)}:</i> {esc(cm['text'])}")
+            item = f"• <i>{fmt_dt(cm['created_at'])}, {user_name(author)}:</i> {esc(clip(cm['text'], 300))}"
+            if len(item) + 1 > budget:
+                break
+            items.append(item)
+            budget -= len(item) + 1
+        if items:
+            more = f" (всего {total_comments})" if total_comments > len(items) else ""
+            lines.append(f"\n💬 <b>Последние комментарии{more}:</b>")
+            lines.extend(reversed(items))
 
     cid = c["id"]
     status_row = [btn(("✔️ " if k == c["status"] else "") + v, f"cl:st:{cid}:{k}")
@@ -167,7 +184,7 @@ async def card_view(db: DB, user, c):
     if is_admin(user):
         rows.append([btn("👤 Сменить сотрудника", f"cl:w:{cid}"), btn("🗑 Удалить", f"cl:del:{cid}")])
     rows.append([btn("« К списку", "cl:l:all:0")])
-    return "\n".join(lines)[:4000], kb(*rows)
+    return fit(lines), kb(*rows)
 
 
 async def send_card(message: Message, db: DB, user, cid: int, prefix: str = ""):
@@ -203,15 +220,15 @@ async def client_status(cb: CallbackQuery, db: DB, user, bot: Bot):
     await db.run("UPDATE clients SET status=? WHERE id=?", st, c["id"])
     old, new = CLIENT_STATUSES.get(c["status"], c["status"]), CLIENT_STATUSES[st]
     await db.audit(user["id"], f"Клиент #{c['id']}: {old} → {new}")
+    await cb.answer("Статус изменён")
+    fresh = await db.one("SELECT * FROM clients WHERE id=?", c["id"])
+    text, markup = await card_view(db, user, fresh)
+    await show(cb, text, markup)
     await notify_admins(
         bot, db,
         f"🔁 {user_name(user)} сменил статус клиента #{c['id']} {esc(c['name'])}: {old} → <b>{new}</b>",
         exclude_user_id=user["id"],
     )
-    await cb.answer("Статус изменён")
-    c = await db.one("SELECT * FROM clients WHERE id=?", c["id"])
-    text, markup = await card_view(db, user, c)
-    await show(cb, text, markup)
 
 
 # --- комментарии ---
@@ -222,7 +239,7 @@ async def comment_start(cb: CallbackQuery, state: FSMContext, db: DB, user):
     if c is None:
         return await cb.answer("Нет доступа", show_alert=True)
     await state.set_state(ClientComment.text)
-    await state.update_data(cid=c["id"])
+    await state.set_data({"cid": c["id"]})
     await cb.answer()
     await cb.message.answer(f"💬 Введите комментарий к клиенту #{c['id']} {esc(c['name'])}:",
                             reply_markup=cancel_kb())
@@ -230,14 +247,18 @@ async def comment_start(cb: CallbackQuery, state: FSMContext, db: DB, user):
 
 @router.message(ClientComment.text, F.text)
 async def comment_save(message: Message, state: FSMContext, db: DB, user):
-    cid = (await state.get_data())["cid"]
-    c = await get_client_for(db, user, cid)
+    text = message.text.strip()
+    if not text:
+        await message.answer("Комментарий пустой. Введите текст:", reply_markup=cancel_kb())
+        return
+    cid = (await state.get_data()).get("cid")
     await state.clear()
+    c = await get_client_for(db, user, cid) if cid else None
     if c is None:
         await message.answer("Клиент не найден.")
         return
     await db.run("INSERT INTO comments(client_id, author_id, text, created_at) VALUES (?, ?, ?, ?)",
-                 cid, user["id"], message.text.strip()[:1500], now())
+                 cid, user["id"], text[:1500], now())
     await db.audit(user["id"], f"Комментарий к клиенту #{cid}")
     await send_card(message, db, user, cid, "✅ Комментарий добавлен.\n\n")
 
@@ -255,7 +276,7 @@ async def comments_all(cb: CallbackQuery, db: DB, user):
     chunk = f"📝 <b>Комментарии — клиент #{c['id']} {esc(c['name'])}</b>\n"
     for cm in rows:
         author = await db.get_user(cm["author_id"])
-        line = f"\n• <i>{fmt_dt(cm['created_at'])}, {user_name(author)}:</i> {esc(cm['text'])}"
+        line = f"\n• <i>{fmt_dt(cm['created_at'])}, {user_name(author)}:</i> {esc(clip(cm['text'], 1500))}"
         if len(chunk) + len(line) > 3900:
             await cb.message.answer(chunk)
             chunk = ""
@@ -270,8 +291,8 @@ async def client_req_pick(cb: CallbackQuery, db: DB, user):
     c = await get_client_for(db, user, int(cb.data.split(":")[2]))
     if c is None:
         return await cb.answer("Нет доступа", show_alert=True)
-    reqs = await db.all("SELECT * FROM requisites WHERE is_active=1 ORDER BY id DESC")
-    rows = [[btn(f"🟢 #{r['id']} {r['iban'][-8:]} · {r['holder'][:22]}", f"cl:rqs:{c['id']}:{r['id']}")]
+    reqs = await db.all("SELECT * FROM requisites WHERE is_active=1 ORDER BY id DESC LIMIT 50")
+    rows = [[btn(clip(f"🟢 #{r['id']} {r['iban'][-8:]} · {r['holder']}", 60), f"cl:rqs:{c['id']}:{r['id']}")]
             for r in reqs]
     if c["requisite_id"]:
         rows.append([btn("📋 Показать текущий для клиента", f"cl:rqshow:{c['id']}")])
@@ -326,8 +347,8 @@ async def client_worker_pick(cb: CallbackQuery, db: DB, user):
     if not is_admin(user):
         return await cb.answer("Нет доступа", show_alert=True)
     cid = int(cb.data.split(":")[2])
-    staff = await db.all("SELECT * FROM users WHERE nick IS NOT NULL ORDER BY role DESC, nick")
-    rows = [[btn(user_name(u), f"cl:ws:{cid}:{u['id']}")] for u in staff]
+    staff = await db.all("SELECT * FROM users WHERE nick IS NOT NULL AND approved=1 ORDER BY role DESC, nick LIMIT 90")
+    rows = [[btn(clip(user_label(u), 60), f"cl:ws:{cid}:{u['id']}")] for u in staff]
     rows.append([btn("« К клиенту", f"cl:v:{cid}")])
     await cb.answer()
     await show(cb, f"👤 Выберите сотрудника для клиента #{cid}:", kb(*rows))
@@ -339,11 +360,19 @@ async def client_worker_set(cb: CallbackQuery, db: DB, user, bot: Bot):
         return await cb.answer("Нет доступа", show_alert=True)
     _, _, cid, uid = cb.data.split(":")
     c = await db.one("SELECT * FROM clients WHERE id=?", int(cid))
-    worker = await db.get_user(int(uid))
+    worker = await db.one("SELECT * FROM users WHERE id=? AND nick IS NOT NULL AND approved=1", int(uid))
     if c is None or worker is None:
         return await cb.answer("Не найдено", show_alert=True)
-    await db.run("UPDATE clients SET worker_id=? WHERE id=?", worker["id"], c["id"])
+    if c["worker_id"] == worker["id"]:
+        return await cb.answer("Клиент уже у этого сотрудника")
+    # неподтверждённые оплаты переходят вместе с клиентом
+    await db.run_many([
+        ("UPDATE clients SET worker_id=? WHERE id=?", worker["id"], c["id"]),
+        ("UPDATE payments SET worker_id=? WHERE client_id=? AND status='pending'", worker["id"], c["id"]),
+    ])
     await db.audit(user["id"], f"Клиент #{c['id']} передан {worker['nick']}")
+    if c["worker_id"] and c["worker_id"] not in (user["id"], worker["id"]):
+        await notify_user(bot, db, c["worker_id"], f"📤 Клиент #{c['id']} {esc(c['name'])} передан другому сотруднику.")
     if worker["id"] != user["id"]:
         await notify_user(bot, db, worker["id"],
                           f"📥 Вам передан клиент #{c['id']} {esc(c['name'])}.",
@@ -375,9 +404,9 @@ async def client_delete(cb: CallbackQuery, db: DB, user, bot: Bot):
         return await cb.answer("Уже удалён", show_alert=True)
     await db.run("DELETE FROM clients WHERE id=?", cid)
     await db.audit(user["id"], f"Удалил клиента #{cid} {c['name']}")
+    await cb.answer("Удалено")
     await notify_admins(bot, db, f"🗑 {user_name(user)} удалил клиента #{cid} {esc(c['name'])}.",
                         exclude_user_id=user["id"])
-    await cb.answer("Удалено")
     text, markup = await list_view(db, user, "all", 0)
     await show(cb, text, markup)
 
@@ -388,6 +417,7 @@ async def client_delete(cb: CallbackQuery, db: DB, user, bot: Bot):
 async def new_client_start(message: Message, state: FSMContext):
     await state.clear()
     await state.set_state(NewClient.name)
+    await state.set_data({})
     await message.answer("➕ <b>Новый клиент</b>\n\nВведите имя клиента:", reply_markup=cancel_kb())
 
 
@@ -403,29 +433,35 @@ async def new_client_name(message: Message, state: FSMContext):
 
 
 @router.message(NewClient.phone, F.text | F.contact)
-async def new_client_phone(message: Message, state: FSMContext, db: DB):
-    phone = message.contact.phone_number if message.contact else message.text.strip()
-    if len(re.sub(r"\D", "", phone)) < 7 or len(phone) > 25:
+async def new_client_phone(message: Message, state: FSMContext, db: DB, user):
+    phone = message.contact.phone_number if message.contact else " ".join(message.text.split())
+    digits = re.sub(r"\D", "", phone)
+    if not re.fullmatch(r"\+?[\d\s\-()]{7,25}", phone) or len(digits) < 7:
         await message.answer("Похоже, это не телефон. Введите ещё раз:", reply_markup=cancel_kb())
         return
-    digits = re.sub(r"\D", "", phone)
-    dup = await db.one(
-        f"SELECT id, name FROM clients WHERE {PHONE} LIKE ?",
-        f"%{digits[-9:]}%")
+    warn = ""
+    if len(digits) >= 9:
+        dup = await db.one(f"SELECT id, name, worker_id FROM clients WHERE {PHONE} LIKE ? ORDER BY id DESC",
+                           f"%{digits[-9:]}")
+        if dup and (is_admin(user) or dup["worker_id"] == user["id"]):
+            warn = f"⚠️ Клиент с таким номером уже есть: #{dup['id']} {esc(dup['name'])}\n\n"
+        elif dup:
+            # сотруднику не раскрываем чужих клиентов — только факт
+            warn = "⚠️ Клиент с таким номером уже есть в базе у другого сотрудника.\n\n"
     await state.update_data(phone=phone)
     await state.set_state(NewClient.comment)
-    warn = f"⚠️ Клиент с похожим номером уже есть: #{dup['id']} {esc(dup['name'])}\n\n" if dup else ""
     await message.answer(warn + "Комментарий к клиенту (или «-» чтобы пропустить):",
                          reply_markup=cancel_kb())
 
 
 @router.message(NewClient.comment, F.text)
 async def new_client_comment(message: Message, state: FSMContext, db: DB, user, bot: Bot):
-    comment = None if message.text.strip() == "-" else message.text.strip()[:1500]
+    comment = None if message.text.strip() in ("-", "") else message.text.strip()[:1500]
     await state.update_data(comment=comment)
     if is_admin(user):
-        staff = await db.all("SELECT * FROM users WHERE nick IS NOT NULL ORDER BY role DESC, nick")
-        rows = [[btn(("🙋 Себе" if u["id"] == user["id"] else user_name(u)), f"nc:w:{u['id']}")]
+        staff = await db.all(
+            "SELECT * FROM users WHERE nick IS NOT NULL AND approved=1 ORDER BY role DESC, nick LIMIT 90")
+        rows = [[btn(("🙋 Себе" if u["id"] == user["id"] else clip(user_label(u), 60)), f"nc:w:{u['id']}")]
                 for u in staff]
         rows.append([btn("✖️ Отмена", "cancel")])
         await state.set_state(NewClient.worker)
@@ -436,14 +472,25 @@ async def new_client_comment(message: Message, state: FSMContext, db: DB, user, 
 
 @router.callback_query(NewClient.worker, F.data.startswith("nc:w:"))
 async def new_client_worker(cb: CallbackQuery, state: FSMContext, db: DB, user, bot: Bot):
+    if not is_admin(user):
+        await state.clear()
+        return await cb.answer("Нет доступа", show_alert=True)
+    worker = await db.one("SELECT id FROM users WHERE id=? AND nick IS NOT NULL AND approved=1",
+                          int(cb.data.split(":")[2]))
+    if worker is None:
+        return await cb.answer("Сотрудник не найден, выберите другого", show_alert=True)
     await cb.answer()
-    await create_client(cb.message, state, db, user, bot, int(cb.data.split(":")[2]))
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await create_client(cb.message, state, db, user, bot, worker["id"])
 
 
 async def create_client(message: Message, state: FSMContext, db: DB, user, bot: Bot, worker_id: int):
     data = await state.get_data()
     await state.clear()
-    if "name" not in data:
+    if "name" not in data or "phone" not in data:
         await message.answer("Данные устарели, начните заново.")
         return
     cur = await db.run(

@@ -1,8 +1,9 @@
 import html
 import os
+import re
 import time
 from datetime import date, datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 TZ = ZoneInfo(os.environ.get("TZ_NAME", "Asia/Yerevan"))
@@ -49,15 +50,63 @@ def fmt_money(kop: int | float | None) -> str:
 
 
 def parse_money(text: str) -> int | None:
-    t = (text or "").replace(" ", "").replace(" ", "").replace("₴", "")
-    t = t.replace("грн", "").replace(",", ".")
-    try:
-        value = Decimal(t)
-    except InvalidOperation:
+    """Сумма в гривнах → копейки. Только цифры и максимум 2 знака после запятой."""
+    t = (text or "").strip().lower()
+    for junk in (" ", "\u00a0", "\u202f", "\u2009", "\t", "₴", "грн", "uah"):
+        t = t.replace(junk, "")
+    t = t.rstrip(".").replace(",", ".")
+    if not re.fullmatch(r"\d{1,9}(\.\d{1,2})?", t, flags=re.ASCII):
         return None
-    if value <= 0 or value > Decimal("1000000000"):
-        return None
-    return int((value * 100).quantize(Decimal("1")))
+    kop = int(Decimal(t) * 100)
+    return kop if 0 < kop <= 100_000_000 * 100 else None
+
+
+def clip(value, limit: int) -> str:
+    s = "" if value is None else str(value)
+    return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
+def fit(lines: list[str], limit: int = 4000, tail: str = "…") -> str:
+    """Склеить строки, не превышая лимит и не разрывая HTML-теги посреди строки."""
+    out, size = [], 0
+    for line in lines:
+        if size + len(line) + 1 > limit - len(tail) - 1:
+            out.append(tail)
+            break
+        out.append(line)
+        size += len(line) + 1
+    return "\n".join(out)
+
+
+def user_label(row) -> str:
+    """Имя для кнопок (обычный текст, без HTML)."""
+    if row is None:
+        return "—"
+    if row["nick"]:
+        return row["nick"]
+    if row["username"]:
+        return "@" + row["username"]
+    return f"id{row['id']}"
+
+
+def like_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def iban_ok(iban: str) -> bool:
+    if not re.fullmatch(r"[A-Z]{2}\d{2}[A-Z0-9]{11,30}", iban):
+        return False
+    if iban.startswith("UA") and len(iban) != 29:
+        return False
+    moved = iban[4:] + iban[:4]
+    return int("".join(str(int(c, 36)) for c in moved)) % 97 == 1
+
+
+def ipn_checksum_ok(ipn: str) -> bool:
+    """Контрольная цифра РНОКПП (ІПН). При несовпадении только предупреждаем."""
+    d = [int(c) for c in ipn]
+    weights = (-1, 5, 7, 9, 4, 6, 10, 5, 7)
+    return sum(a * b for a, b in zip(d, weights)) % 11 % 10 == d[9]
 
 
 def user_name(row) -> str:

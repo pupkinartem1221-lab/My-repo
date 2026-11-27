@@ -15,7 +15,7 @@ router = Router(name="common")
 async def show(cb: CallbackQuery, text: str, reply_markup: InlineKeyboardMarkup | None = None):
     """Обновить сообщение под кнопкой, а если нельзя (например, это фото) — прислать новое."""
     msg = cb.message
-    if msg is not None and msg.text is not None:
+    if isinstance(msg, Message) and msg.text is not None:
         try:
             await msg.edit_text(text, reply_markup=reply_markup)
             return
@@ -27,12 +27,12 @@ async def show(cb: CallbackQuery, text: str, reply_markup: InlineKeyboardMarkup 
 
 @router.message(NickForm.nick, F.text)
 async def set_nick(message: Message, state: FSMContext, db: DB, user):
-    nick = message.text.strip()
-    if nick.startswith("/") or not 2 <= len(nick) <= 32:
+    nick = " ".join(message.text.split())
+    if nick.startswith("/") or not 2 <= len(nick) <= 32 or not nick.isprintable():
         await message.answer("Ник должен быть от 2 до 32 символов. Попробуйте ещё раз:")
         return
     taken = await db.one(
-        "SELECT id FROM users WHERE lower(nick)=lower(?) AND id<>?", nick, user["id"]
+        "SELECT id FROM users WHERE ulower(nick)=? AND id<>?", nick.lower(), user["id"]
     )
     if taken:
         await message.answer("Этот ник уже занят. Введите другой:")
