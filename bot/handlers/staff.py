@@ -10,7 +10,8 @@ from ..keyboards import BTN_STAFF, back_btn, btn, cancel_kb, confirm_kb, danger_
 from ..middleware import PENDING_TTL
 from ..notify import notify_admins, send_safe
 from ..ui import forget, show
-from ..utils import ROLES, clip, esc, fmt_short, is_admin, now, user_name
+from ..rules import set_percent, worker_total
+from ..utils import ROLES, clip, esc, fmt_money, fmt_short, is_admin, now, user_name
 
 router = Router(name="staff")
 USERNAME_RE = re.compile(r"[a-z](?!.*__)[a-z0-9_]{2,30}[a-z0-9]")
@@ -242,7 +243,7 @@ async def percent_start(cb: CallbackQuery, state: FSMContext, db: DB, user):
     await cb.answer()
     presets = [btn(f"{p}%", f"st:pv:{p}") for p in (30, 40, 50, 60)]
     await show(cb, f"💯 Процент для <b>{user_name(u)}</b> · сейчас {u['percent']:g}%\n\n"
-                   "Выберите или введите число от 0 до 100.\n<i>Действует для новых оплат.</i>",
+                   "Выберите или введите число от 0 до 100.\n<i>Весь заработок сотрудника пересчитается по новому проценту.</i>",
                kb(presets, [btn("✖️ Отмена", f"st:v:{u['id']}")]))
 
 
@@ -253,11 +254,14 @@ async def save_percent(event, state: FSMContext, db: DB, user, bot: Bot, value: 
     if u is None or not can_set_percent(user, u):
         await show(event, "Нет доступа.", kb([home_btn()]))
         return
-    await db.run("UPDATE users SET percent=? WHERE id=?", value, uid)
-    await db.audit(user["id"], f"Процент {u['nick'] or u['username']}: {u['percent']:g}% → {value:g}%")
-    await open_card(event, db, user, uid, f"✅ Процент: {value:g}%")
+    n = await set_percent(db, uid, value)
+    total = await worker_total(db, uid)
+    await db.audit(user["id"], f"Процент {u['nick'] or u['username']}: {u['percent']:g}% → {value:g}% "
+                               f"(пересчитано оплат: {n})")
+    await open_card(event, db, user, uid, f"✅ Процент: {value:g}%\nЗаработок пересчитан: {fmt_money(total)} ({n} опл.)")
     if uid != user["id"] and u["tg_id"]:
-        await send_safe(bot, u["tg_id"], f"💯 Ваш процент теперь <b>{value:g}%</b>")
+        await send_safe(bot, u["tg_id"], f"💯 Ваш процент теперь <b>{value:g}%</b>\n"
+                                         f"Заработок пересчитан: <b>{fmt_money(total)}</b>")
     await notify_admins(bot, db, f"💯 {user_name(user)}: процент {user_name(u)} {u['percent']:g}% → {value:g}%",
                         exclude_user_id=user["id"])
 

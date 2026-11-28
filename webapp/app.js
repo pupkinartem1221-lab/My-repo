@@ -1091,8 +1091,11 @@ function memberSheet(u) {
     range.addEventListener("input", () => { val.textContent = range.value + "%"; if (range.value % 5 === 0 && range.value != last) { haptic("select"); last = range.value; } });
     const presets = h("div", { class: "chips", style: "justify-content:center" }, ...[30, 40, 50, 60].map((p) => h("div", { class: "chip", onclick: () => { range.value = p; val.textContent = p + "%"; haptic("select"); } }, p + "%")));
     const save = h("button", { class: "btn primary block", style: "margin-top:8px" }, "Сохранить процент");
-    save.onclick = () => withLoading(save, async () => { await api(`/api/team/${u.id}`, { method: "PATCH", body: { percent: Number(range.value) } }); closeSheet(); toast(`Процент: ${range.value}%`); refreshCurrent(); });
-    parts.push(h("div", { class: "subtitle" }, "Процент от оплат"), val, range, presets, save, h("div", { class: "hint", style: "text-align:center" }, "Действует для новых оплат"));
+    save.onclick = () => withLoading(save, async () => {
+      const r = await api(`/api/team/${u.id}`, { method: "PATCH", body: { percent: Number(range.value) } });
+      closeSheet(); toast(`${range.value}% · заработок пересчитан: ${money(r.total || 0)}`); refreshCurrent();
+    });
+    parts.push(h("div", { class: "subtitle" }, "Процент от оплат"), val, range, presets, save, h("div", { class: "hint", style: "text-align:center" }, "Весь заработок сотрудника пересчитается по новому проценту"));
   }
   if (u.can_manage) {
     const del = h("button", { class: "btn red block", style: "margin-top:16px" }, icon("trash", "sm"), "Удалить из команды");

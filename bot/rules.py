@@ -18,3 +18,19 @@ async def revert_paid_if_no_receipt(db: DB, client_id: int | None) -> bool:
         "UPDATE clients SET status='work' WHERE id=? AND status='paid' AND NOT EXISTS "
         "(SELECT 1 FROM payments WHERE client_id=? AND status IN ('pending','confirmed'))", client_id, client_id)
     return cur.rowcount > 0
+
+
+async def set_percent(db: DB, user_id: int, value: float) -> int:
+    """Новый процент сотрудника + пересчёт ВСЕГО его заработка по уже подтверждённым оплатам.
+    Возвращает количество пересчитанных оплат."""
+    await db.run("UPDATE users SET percent=? WHERE id=?", value, user_id)
+    cur = await db.run(
+        "UPDATE payments SET worker_percent=?, worker_share=CAST(amount * ? / 100.0 + 0.5 AS INTEGER) "
+        "WHERE worker_id=? AND status='confirmed'", value, value, user_id)
+    return cur.rowcount
+
+
+async def worker_total(db: DB, user_id: int) -> int:
+    row = await db.one("SELECT COALESCE(SUM(worker_share),0) s FROM payments WHERE worker_id=? AND status='confirmed'",
+                       user_id)
+    return row["s"]
