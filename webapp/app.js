@@ -563,7 +563,7 @@ function ClientScreen(id) {
     const req = c.requisite;
     profile.append(avatar, h("div", { class: "name" }, c.name), h("div", { class: "phone" }, c.phone || "—"),
       h("div", { class: "actions" },
-        c.phone ? h("a", { class: "act", href: "tel:" + c.phone.replace(/[^\d+]/g, "") }, icon("phone", "sm"), "Позвонить") : null,
+        c.phone ? h("div", { class: "act", onclick: () => contactSheet(c) }, icon("msg", "sm"), "Связаться") : null,
         h("div", { class: "act", onclick: () => receiptSheet(c) }, icon("receipt", "sm"), "Квитанция"),
         req && req.active ? h("div", { class: "act", onclick: () => shareText(reqText(req)) }, icon("send", "sm"), "Реквизиты") : null,
         c.can_manage ? h("div", { class: "act", onclick: () => clientMenu(c) }, icon("more", "sm"), "Ещё")
@@ -607,6 +607,41 @@ function ClientScreen(id) {
       h("div", { class: "subtitle" }, "Комментарии"), commentsBox,
       h("div", { class: "comment-box" }, cInput, cSend));
   }, true);
+}
+
+/* ---------- связаться с клиентом ---------- */
+function phoneIntl(phone) {
+  let d = (phone || "").replace(/\D/g, "");
+  if (d.startsWith("00")) d = d.slice(2);
+  if (d.length === 10 && d.startsWith("0")) d = "38" + d;
+  else if (d.length === 9) d = "380" + d;
+  return d.length >= 10 && d.length <= 15 ? d : null;
+}
+function openExternal(url) {
+  // https — через Telegram (откроет приложение мессенджера); схемы tel:/sms:/viber: — напрямую
+  if (/^https:\/\/t\.me\//.test(url) && tg && tg.openTelegramLink) tg.openTelegramLink(url);
+  else if (/^https:/.test(url) && tg && tg.openLink) tg.openLink(url);
+  else { const a = h("a", { href: url, style: "display:none" }); document.body.append(a); a.click(); a.remove(); }
+}
+function contactSheet(c) {
+  const d = phoneIntl(c.phone);
+  const opts = [
+    ["phone", "Позвонить", "#2fd27a", "tel:+" + (d || c.phone.replace(/[^\d]/g, ""))],
+    d && ["msg", "WhatsApp", "#25d366", `https://wa.me/${d}`],
+    d && ["send", "Telegram", "#2aabee", `https://t.me/+${d}`],
+    d && ["phone", "Viber", "#7360f2", `viber://chat?number=%2B${d}`],
+    d && ["shield", "Signal", "#3a76f0", `https://signal.me/#p/+${d}`],
+    ["msg", "SMS", "#8d96ab", "sms:+" + (d || c.phone.replace(/[^\d]/g, ""))],
+  ].filter(Boolean);
+  const list = h("div", { class: "list" }, ...opts.map(([ic, name, color, url]) =>
+    h("div", { class: "item", onclick: () => { haptic("light"); openExternal(url); } },
+      h("div", { class: "avatar", style: `background:${color}22;color:${color}` }, icon(ic, "sm")),
+      h("div", { class: "grow name" }, name), icon("right", "sm chev"))));
+  openSheet(c.name, h("div", null,
+    h("div", { class: "row between", style: "margin:-6px 2px 12px" }, h("div", { class: "mono muted" }, c.phone),
+      h("button", { class: "copy", onclick: () => copy(c.phone, "Номер скопирован") }, icon("copy", "xs"), " Копировать")),
+    stagger(list),
+    !d ? h("div", { class: "hint warn" }, "Номер в неполном формате — мессенджеры недоступны") : null));
 }
 
 function commentNode(x) { return h("div", { class: "comment" }, h("div", { class: "who" }, `${x.author || "—"} · ${dt(x.at)}`), x.text); }

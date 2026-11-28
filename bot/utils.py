@@ -95,6 +95,29 @@ def user_label(row) -> str:
     return f"id{row['id']}"
 
 
+def phone_intl(phone: str | None) -> str | None:
+    """Номер в международном формате без «+» (для ссылок на мессенджеры). Без кода — считаем украинским."""
+    d = re.sub(r"\D", "", phone or "")
+    if d.startswith("00"):
+        d = d[2:]
+    if len(d) == 10 and d.startswith("0"):
+        d = "38" + d
+    elif len(d) == 9:
+        d = "380" + d
+    return d if 10 <= len(d) <= 15 else None
+
+
+def messenger_links(phone: str | None) -> dict[str, str]:
+    d = phone_intl(phone)
+    if not d:
+        return {}
+    return {
+        "whatsapp": f"https://wa.me/{d}",
+        "telegram": f"https://t.me/+{d}",
+        "signal": f"https://signal.me/#p/+{d}",
+    }
+
+
 def like_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
