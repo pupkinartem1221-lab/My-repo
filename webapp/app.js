@@ -625,14 +625,10 @@ function openExternal(url) {
 }
 function contactSheet(c) {
   const d = phoneIntl(c.phone);
-  const opts = [
-    ["phone", "Позвонить", "#2fd27a", "tel:+" + (d || c.phone.replace(/[^\d]/g, ""))],
-    d && ["msg", "WhatsApp", "#25d366", `https://wa.me/${d}`],
-    d && ["send", "Telegram", "#2aabee", `https://t.me/+${d}`],
-    d && ["phone", "Viber", "#7360f2", `viber://chat?number=%2B${d}`],
-    d && ["shield", "Signal", "#3a76f0", `https://signal.me/#p/+${d}`],
-    ["msg", "SMS", "#8d96ab", "sms:+" + (d || c.phone.replace(/[^\d]/g, ""))],
-  ].filter(Boolean);
+  const opts = d ? [
+    ["msg", "WhatsApp", "#25d366", `https://wa.me/${d}`],
+    ["send", "Telegram", "#2aabee", `https://t.me/+${d}`],
+  ] : [];
   const list = h("div", { class: "list" }, ...opts.map(([ic, name, color, url]) =>
     h("div", { class: "item", onclick: () => { haptic("light"); openExternal(url); } },
       h("div", { class: "avatar", style: `background:${color}22;color:${color}` }, icon(ic, "sm")),
