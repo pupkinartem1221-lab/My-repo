@@ -267,16 +267,40 @@ function attachPullToRefresh() {
 function openSheet(title, content) {
   closeSheet(true);
   const bd = h("div", { class: "backdrop", onclick: () => closeSheet() });
-  const sh = h("div", { class: "sheet" }, h("div", { class: "grab" }), title ? h("h3", null, title) : null, content);
+  const head = h("div", { class: "sheet-head" }, title ? h("h3", null, title) : h("div", { class: "grow" }),
+    h("button", { class: "sheet-close", "aria-label": "Закрыть", onclick: () => closeSheet() }, icon("x", "sm")));
+  const sh = h("div", { class: "sheet" }, h("div", { class: "grab" }), head, content);
   $sheetRoot.append(bd, sh);
+  enableSheetDrag(sh, bd);
   updateBack(); haptic("light");
   return sh;
+}
+// Смахнуть шторку вниз, чтобы закрыть (за ручку/заголовок или когда содержимое прокручено вверх)
+function enableSheetDrag(sh, bd) {
+  let y0 = null, dy = 0;
+  sh.addEventListener("touchstart", (e) => {
+    const onHandle = e.target.closest(".grab,.sheet-head");
+    if (!onHandle && (sh.scrollTop > 0 || e.target.closest("input,textarea,.range"))) { y0 = null; return; }
+    y0 = e.touches[0].clientY; dy = 0;
+  }, { passive: true });
+  sh.addEventListener("touchmove", (e) => {
+    if (y0 == null) return;
+    dy = Math.max(0, e.touches[0].clientY - y0);
+    if (dy > 4) { sh.classList.add("dragging"); sh.style.transform = `translateY(${dy}px)`; bd.style.opacity = String(Math.max(0, 1 - dy / 400)); }
+  }, { passive: true });
+  sh.addEventListener("touchend", () => {
+    if (y0 == null) return; y0 = null;
+    sh.classList.remove("dragging");
+    if (dy > 110) { haptic("light"); closeSheet(); return; }
+    sh.style.transition = "transform .3s var(--spring)"; sh.style.transform = ""; bd.style.opacity = "";
+    setTimeout(() => { sh.style.transition = ""; }, 320);
+  });
 }
 function closeSheet(instant = false) {
   const kids = [...$sheetRoot.children];
   if (!kids.length) return;
   if (instant) { $sheetRoot.replaceChildren(); updateBack(); return; }
-  kids.forEach((k) => k.classList.add("out"));
+  kids.forEach((k) => { k.style.transition = ""; k.classList.add("out"); if (k.classList.contains("sheet") && k.style.transform) { k.style.transition = "transform .25s var(--ease)"; k.style.transform = "translateY(100%)"; } });
   setTimeout(() => { kids.forEach((k) => k.remove()); updateBack(); }, 230);
 }
 function confirmAsk(text) { return new Promise((res) => { if (tg && tg.showConfirm) tg.showConfirm(text, res); else res(confirm(text)); }); }
@@ -299,7 +323,7 @@ function sparkline(values) {
   const defs = document.createElementNS(SVG, "defs");
   const g = document.createElementNS(SVG, "linearGradient");
   g.id = "sparkfill"; g.setAttribute("x1", "0"); g.setAttribute("y1", "0"); g.setAttribute("x2", "0"); g.setAttribute("y2", "1");
-  [["0%", "rgba(255,255,255,.35)"], ["100%", "rgba(255,255,255,0)"]].forEach(([o, c]) => { const s = document.createElementNS(SVG, "stop"); s.setAttribute("offset", o); s.setAttribute("stop-color", c); g.append(s); });
+  [["0%", "rgba(139,125,255,.32)"], ["100%", "rgba(139,125,255,0)"]].forEach(([o, c]) => { const s = document.createElementNS(SVG, "stop"); s.setAttribute("offset", o); s.setAttribute("stop-color", c); g.append(s); });
   defs.append(g); svg.append(defs);
   const area = document.createElementNS(SVG, "path"); area.setAttribute("class", "area"); area.setAttribute("d", d + ` L${W} ${H} L0 ${H} Z`);
   const line = document.createElementNS(SVG, "path"); line.setAttribute("class", "line"); line.setAttribute("d", d);
@@ -534,7 +558,8 @@ function ClientScreen(id) {
         c.phone ? h("a", { class: "act", href: "tel:" + c.phone.replace(/[^\d+]/g, "") }, icon("phone", "sm"), "Позвонить") : null,
         h("div", { class: "act", onclick: () => receiptSheet(c) }, icon("receipt", "sm"), "Квитанция"),
         req && req.active ? h("div", { class: "act", onclick: () => shareText(reqText(req)) }, icon("send", "sm"), "Реквизиты") : null,
-        c.can_manage ? h("div", { class: "act", onclick: () => clientMenu(c) }, icon("more", "sm"), "Ещё") : null));
+        c.can_manage ? h("div", { class: "act", onclick: () => clientMenu(c) }, icon("more", "sm"), "Ещё")
+          : h("div", { class: "act", onclick: () => editClientSheet(c) }, icon("user", "sm"), "Изменить")));
 
     const reqCard = h("div", { class: "card" },
       h("div", { class: "row between", style: "margin-bottom:4px" }, h("b", { class: "row", style: "gap:8px" }, icon("card", "sm"), "Реквизит для оплаты"),
@@ -580,10 +605,44 @@ function commentNode(x) { return h("div", { class: "comment" }, h("div", { class
 
 const PST = { pending: ["clock", "На проверке"], confirmed: ["check", "Подтверждена"], rejected: ["x", "Отклонена"] };
 function paymentRow(p) {
-  return h("div", { class: "item", onclick: () => viewFile(p) },
+  return h("div", { class: "item", onclick: () => paymentSheet(p) },
     h("div", { class: "avatar s-" + p.status }, icon(PST[p.status][0], "sm")),
     h("div", { class: "grow" }, h("div", { class: "name" }, money(p.amount)), h("div", { class: "sub" }, `${PST[p.status][1]} · ${dt(p.submitted_at)}`)),
     p.share != null ? h("div", { class: "right small muted" }, money(p.share)) : icon("image", "sm chev"));
+}
+
+function paymentSheet(p) {
+  const img = h("div", { class: "skel", style: "height:220px;border-radius:14px" });
+  (async () => {
+    try {
+      const blob = await api(`/api/payments/${p.id}/file`);
+      if (blob.type === "application/pdf") img.replaceWith(h("button", { class: "btn block", onclick: () => viewFile(p) }, icon("file", "sm"), "Открыть PDF"));
+      else {
+        const el = h("img", { class: "preview", src: URL.createObjectURL(blob), alt: "", onclick: () => viewFile(p) });
+        el.onerror = () => el.replaceWith(h("div", { class: "pdf", style: "border-radius:14px" }, icon("image", "lg")));
+        img.replaceWith(el);
+      }
+    } catch (_) { img.replaceWith(h("div", { class: "hint" }, "Не удалось загрузить файл")); }
+  })();
+  const parts = [img,
+    h("div", { class: "row between", style: "margin-top:12px" }, h("div", { class: "amount", style: "font-size:26px;font-weight:800" }, money(p.amount)),
+      h("span", { class: "badge s-" + p.status }, icon(PST[p.status][0], "xs"), PST[p.status][1])),
+    h("div", { class: "small muted", style: "margin-top:4px" }, "Загружена " + dt(p.submitted_at), p.reviewed_at ? " · проверена " + dt(p.reviewed_at) : ""),
+    p.share != null ? h("div", { class: "small", style: "margin-top:4px;color:var(--green)" }, `Сотруднику ${money(p.share)} (${p.percent}%)`) : null];
+  const after = (msg) => { closeSheet(true); toast(msg); refreshCurrent(); };
+  if (ME.admin && p.status === "pending") {
+    parts.push(reviewButtons(p, async (action) => {
+      await api(`/api/payments/${p.id}/review`, { method: "POST", body: { action } });
+      if (badge) setBadge(badge - 1);
+      after(action === "ok" ? "Подтверждено · " + money(p.amount) : "Отклонено");
+    }));
+  }
+  if (ME.admin && p.status !== "pending") {
+    const del = h("button", { class: "btn red block", style: "margin-top:12px" }, icon("trash", "sm"), "Удалить квитанцию");
+    del.onclick = async () => { if (await confirmAsk("Удалить квитанцию? Она пропадёт из отчётов.")) withLoading(del, async () => { await api("/api/payments/" + p.id, { method: "DELETE" }); after("Удалено"); }); };
+    parts.push(del);
+  }
+  openSheet("Квитанция", h("div", null, ...parts.filter(Boolean)));
 }
 
 async function pickRequisite(c) {
@@ -607,12 +666,26 @@ async function clientMenu(c) {
     try { await api("/api/clients/" + c.id, { method: "PATCH", body: { worker_id: u.id } }); closeSheet(); toast("Передан: " + u.nick); refreshCurrent(); }
     catch (e) { toast(e.message, true); }
   } }, h("span", { class: "radio" }), h("div", { class: "grow" }, u.nick), h("span", { class: "small muted" }, u.percent + "%"))));
-  const del = h("button", { class: "btn red block", style: "margin-top:14px" }, icon("trash", "sm"), "Удалить клиента");
+  const edit = h("button", { class: "btn block", style: "margin-top:14px" }, icon("user", "sm"), "Изменить имя и телефон");
+  edit.onclick = () => editClientSheet(c);
+  const del = h("button", { class: "btn red block", style: "margin-top:8px" }, icon("trash", "sm"), "Удалить клиента");
   del.onclick = async () => {
     if (!await confirmAsk(`Удалить клиента «${c.name}»? Оплаты останутся в отчётах.`)) return;
     withLoading(del, async () => { await api("/api/clients/" + c.id, { method: "DELETE" }); closeSheet(true); toast("Удалено"); back(); });
   };
-  openSheet("Передать сотруднику", h("div", null, box, del));
+  openSheet("Передать сотруднику", h("div", null, box, edit, del));
+}
+
+function editClientSheet(c) {
+  const name = h("input", { class: "input", value: c.name });
+  const phone = h("input", { class: "input", value: c.phone || "", type: "tel", inputmode: "tel" });
+  const save = h("button", { class: "btn primary block" }, icon("check", "sm"), "Сохранить");
+  save.onclick = () => withLoading(save, async () => {
+    if (!name.value.trim()) { shake(name); throw new Error("Укажите имя"); }
+    await api("/api/clients/" + c.id, { method: "PATCH", body: { name: name.value, phone: phone.value } });
+    closeSheet(true); toast("Сохранено"); refreshCurrent();
+  });
+  openSheet("Данные клиента", h("div", null, field("Имя", name), field("Телефон", phone), save));
 }
 
 /* ---------- новая квитанция ---------- */
@@ -837,11 +910,33 @@ function More() {
     h("div", { class: "item", onclick: () => push(RequisitesScreen) }, h("div", { class: "avatar s-work" }, icon("card", "sm")),
       h("div", { class: "grow" }, h("div", { class: "name" }, "Реквизиты"), h("div", { class: "sub" }, "IBAN, получатели, статусы")), icon("right", "sm chev")),
     h("div", { class: "item", onclick: () => push(TeamScreen) }, h("div", { class: "avatar s-paid" }, icon("users", "sm")),
-      h("div", { class: "grow" }, h("div", { class: "name" }, "Команда"), h("div", { class: "sub" }, "Сотрудники, проценты, доступ")), icon("right", "sm chev")));
+      h("div", { class: "grow" }, h("div", { class: "name" }, "Команда"), h("div", { class: "sub" }, "Сотрудники, проценты, доступ")), icon("right", "sm chev")),
+    h("div", { class: "item", onclick: () => push(AuditScreen) }, h("div", { class: "avatar s-pending" }, icon("clock", "sm")),
+      h("div", { class: "grow" }, h("div", { class: "name" }, "Журнал"), h("div", { class: "sub" }, "Кто, что и когда изменил")), icon("right", "sm chev")));
   mount(h("div", null, appbar("Ещё"), stagger(list),
     h("div", { class: "card", style: "margin-top:16px;text-align:center" },
       h("div", { class: "me", style: "margin:0 auto 8px;width:52px;height:52px;border-radius:17px;background:var(--grad);display:grid;place-items:center;font-weight:800;color:#fff" }, initials(ME.user.nick)),
       h("div", { style: "font-weight:700" }, ME.user.nick), h("div", { class: "small muted" }, ME.owner ? "Главный админ" : "Админ"))));
+}
+
+function AuditScreen(pushed) {
+  load(async () => {
+    const d = await api("/api/audit");
+    if (!d.items.length) return h("div", null, appbar("Журнал"), emptyState("📜", "Пока пусто"));
+    const groups = [];
+    for (const r of d.items) {
+      const t = dayTitle(r.at);
+      if (!groups.length || groups[groups.length - 1][0] !== t) groups.push([t, []]);
+      groups[groups.length - 1][1].push(r);
+    }
+    return h("div", null, appbar("Журнал"),
+      ...groups.map(([title, rows]) => h("div", null, h("div", { class: "group-title" }, title),
+        h("div", { class: "card", style: "padding:4px 14px" }, ...rows.map((r) =>
+          h("div", { class: "kv", style: "align-items:flex-start" },
+            h("div", { class: "grow" }, h("div", { style: "font-size:14px" }, r.text.replace(/ \[приложение\]$/, "")),
+              h("div", { class: "small muted", style: "margin-top:2px" }, r.who || "—")),
+            h("div", { class: "small muted", style: "flex:none" }, tm(r.at))))))));
+  }, pushed);
 }
 
 function RequisitesScreen(pushed) {
@@ -863,6 +958,7 @@ function RequisitesScreen(pushed) {
           h("button", { class: "copy", onclick: () => copy(reqText(r), "Реквизиты скопированы") }, icon("copy", "xs")),
           r.active ? h("button", { class: "copy share-btn", onclick: () => shareText(reqText(r)) }, icon("send", "xs")) : null),
         r.comment ? h("div", { class: "hint" }, r.comment) : null,
+        ME.admin ? h("button", { class: "copy", style: "margin-top:8px", onclick: () => reqCommentSheet(r) }, r.comment ? "Изменить комментарий" : "+ Комментарий") : null,
         ME.admin ? h("div", { class: "row between small muted", style: "margin-top:10px" },
           h("span", null, `Сегодня ${money(r.today)} · всего ${money(r.total)} · ${plural(r.clients, "клиент", "клиента", "клиентов")}`),
           h("button", { class: "copy", style: "color:var(--red)", onclick: async () => {
@@ -876,6 +972,20 @@ function RequisitesScreen(pushed) {
       d.items.length ? list : emptyState("💳", ME.admin ? "Добавьте первый реквизит" : "Рабочих реквизитов нет"),
       ME.admin ? h("button", { class: "fab", onclick: requisiteSheet }, icon("plus", "lg")) : null);
   }, pushed);
+}
+
+function reqCommentSheet(r) {
+  const input = h("input", { class: "input", value: r.comment || "", placeholder: "Например, банк" });
+  const save = h("button", { class: "btn primary block" }, icon("check", "sm"), "Сохранить");
+  save.onclick = () => withLoading(save, async () => {
+    await api("/api/requisites/" + r.id, { method: "PATCH", body: { comment: input.value } });
+    closeSheet(true); toast("Сохранено"); refreshCurrent();
+  });
+  openSheet("Комментарий к реквизиту", h("div", null, field("Комментарий", input), save,
+    r.comment ? h("button", { class: "btn ghost block", style: "margin-top:8px", onclick: async () => {
+      await api("/api/requisites/" + r.id, { method: "PATCH", body: { comment: "" } }); closeSheet(true); toast("Комментарий удалён"); refreshCurrent();
+    } }, "Очистить") : null));
+  setTimeout(() => input.focus(), 350);
 }
 
 function requisiteSheet() {
@@ -974,7 +1084,7 @@ function inviteSheet(canAdmin) {
 async function start() {
   if (tg) {
     tg.ready(); tg.expand();
-    try { tg.setHeaderColor("#0b0d12"); tg.setBackgroundColor("#0b0d12"); tg.setBottomBarColor && tg.setBottomBarColor("#0b0d12"); } catch (_) {}
+    try { tg.setHeaderColor("#000000"); tg.setBackgroundColor("#000000"); tg.setBottomBarColor && tg.setBottomBarColor("#000000"); } catch (_) {}
     try { tg.disableVerticalSwipes && tg.disableVerticalSwipes(); } catch (_) {}
     tg.BackButton.onClick(back);
   }

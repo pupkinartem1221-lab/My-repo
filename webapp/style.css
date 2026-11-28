@@ -433,3 +433,55 @@ body::before {
 .settings .item .avatar { border-radius: 12px; }
 
 .screen:has(.fab) { padding-bottom: calc(170px + var(--safe-b)); }
+
+/* ================= v3: глубокая тёмная тема ================= */
+:root {
+  --bg: #000000;
+  --bg2: #09090b;
+  --card: #0e0f12;
+  --card2: #16171b;
+  --line: #1c1e24;
+  --text: #f1f2f4;
+  --muted: #858a96;
+  --faint: #4b505b;
+}
+html, body { background: #000; }
+body::before {
+  background:
+    radial-gradient(520px 360px at 115% -8%, rgba(124,108,255,.07), transparent 60%),
+    radial-gradient(420px 320px at -25% 35%, rgba(74,168,255,.04), transparent 60%),
+    #000;
+}
+.hero {
+  color: var(--text);
+  background: linear-gradient(150deg, #141128 0%, #0b0f1b 100%);
+  border: 1px solid rgba(124,108,255,.2);
+  box-shadow: 0 24px 50px -30px rgba(124,108,255,.55);
+}
+.hero::after { background: radial-gradient(circle, rgba(124,108,255,.18), transparent 65%); }
+.hero .label, .hero .meta { color: var(--muted); opacity: 1; }
+.hero .big { color: #fff; }
+.hero .delta { background: rgba(124,108,255,.16); color: #c4bcff; }
+.spark path.line { stroke: #9a8eff; }
+.spark circle { fill: #b7aeff; }
+.kpi, .card, .item, .att, .quick .q, .search, .chip, .input, .opt, .upload, .comment, .icon-btn, .act { background: var(--card); }
+.chip.on { background: #f1f2f4; color: #000; }
+.tabs { background: rgba(9,9,11,.88); border-color: #17181d; }
+.appbar.scrolled { background: rgba(0,0,0,.82); }
+.backdrop { background: rgba(0,0,0,.72); backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px); }
+.sheet { background: #09090b; border-top-color: #1a1b20; touch-action: pan-y; }
+.seg { background: #09090b; }
+.toast { background: rgba(18,18,22,.97); }
+.profile { background: linear-gradient(160deg, #111216, #0b0c0f); }
+.banner { background: rgba(255,200,74,.08); }
+.btn.primary { box-shadow: 0 10px 24px -14px rgba(124,108,255,.8); }
+.fab { box-shadow: 0 14px 30px -12px rgba(124,108,255,.7); }
+
+/* заголовок шторки с кнопкой закрытия */
+.sheet-head { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; }
+.sheet-head h3 { margin: 0; flex: 1; }
+.sheet-close { width: 34px; height: 34px; border-radius: 50%; border: 0; background: var(--card2); color: var(--muted);
+  display: grid; place-items: center; cursor: pointer; flex: none; transition: transform .2s var(--ease); }
+.sheet-close:active { transform: scale(.88); }
+.grab { cursor: grab; padding: 6px 0; margin-top: -6px; background-clip: content-box; height: 17px; }
+.sheet.dragging { animation: none; transition: none; }
