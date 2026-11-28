@@ -12,6 +12,7 @@ from ..notify import HIDE, notify_admins, notify_user, send_file_safe
 from ..ui import extra_file, show
 from ..utils import (PAYMENT_STATUSES, clip, esc, fit, fmt_money, fmt_short, is_admin, now, parse_money,
                      user_name)
+from ..rules import revert_paid_if_no_receipt
 from .clients import get_client_for, open_card
 
 router = Router(name="payments")
@@ -87,16 +88,21 @@ def step(c_name: str, n: int) -> str:
     return f"🧾 <b>Квитанция</b> · {esc(c_name)} · шаг {n} из 2\n\n"
 
 
+async def begin_receipt(event, state: FSMContext, c, set_paid: bool = False):
+    await state.set_state(Receipt.file)
+    await state.set_data({"cid": c["id"], "cname": c["name"], "set_paid": set_paid})
+    head = "✅ Чтобы поставить «Оплачено», прикрепите квитанцию\n\n" if set_paid else ""
+    await show(event, head + step(c["name"], 1) + "📎 Пришлите фото или файл квитанции:",
+               kb([btn("✖️ Отмена", f"cl:v:{c['id']}")]))
+
+
 @router.callback_query(F.data.startswith("pay:new:"))
 async def receipt_start(cb: CallbackQuery, state: FSMContext, db: DB, user):
     c = await get_client_for(db, user, int(cb.data.split(":")[2]))
     if c is None:
         return await cb.answer("Нет доступа", show_alert=True)
-    await state.set_state(Receipt.file)
-    await state.set_data({"cid": c["id"], "cname": c["name"]})
     await cb.answer()
-    await show(cb, step(c["name"], 1) + "📎 Пришлите фото или файл квитанции:",
-               kb([btn("✖️ Отмена", f"cl:v:{c['id']}")]))
+    await begin_receipt(cb, state, c)
 
 
 @router.message(Receipt.file, F.photo | F.document)
@@ -191,6 +197,10 @@ async def finalize(event, state: FSMContext, db: DB, user, bot: Bot, requisite_i
     await db.audit(user["id"], f"Квитанция #{pid}: клиент #{c['id']}, {fmt_money(data['amount'])}")
     note = (f"✅ Квитанция на {fmt_money(data['amount'])} добавлена — подтвердите её в «🧾 Квитанции»"
             if is_admin(user) else f"✅ Квитанция на {fmt_money(data['amount'])} отправлена на проверку")
+    if data.get("set_paid") and c["status"] != "paid":
+        await db.run("UPDATE clients SET status='paid' WHERE id=?", c["id"])
+        await db.audit(user["id"], f"Клиент #{c['id']}: → ✅ Оплачено (с квитанцией #{pid})")
+        note += "\nСтатус: ✅ Оплачено"
     await open_card(event, db, user, c["id"], note)
     p = await db.one("SELECT * FROM payments WHERE id=?", pid)
     for admin in await db.all("SELECT * FROM users WHERE role IN ('owner','admin') AND tg_id IS NOT NULL "
@@ -249,6 +259,8 @@ async def receipt_review(cb: CallbackQuery, db: DB, user, bot: Bot):
     else:
         await db.audit(user["id"], f"Отклонил квитанцию #{pid} ({amount})")
         worker_text = submitter_text = f"❌ Квитанция отклонена: {name} · {amount}"
+        if await revert_paid_if_no_receipt(db, p["client_id"]):
+            worker_text = submitter_text = worker_text + "\nСтатус клиента вернулся в 🔄 В работе"
         other_text = f"❌ {user_name(user)} отклонил: {name} · {amount}"
         await cb.answer("❌ Отклонено")
 
@@ -357,10 +369,7 @@ async def payment_delete(cb: CallbackQuery, db: DB, user, bot: Bot):
     p = await db.one("SELECT * FROM payments WHERE id=?", pid)
     if p is None or (await db.run("DELETE FROM payments WHERE id=?", pid)).rowcount == 0:
         return await cb.answer("Уже удалена", show_alert=True)
-    if p["status"] == "confirmed" and p["client_id"]:
-        # если подтверждённых оплат не осталось — клиент снова «в работе»
-        await db.run("UPDATE clients SET status='work' WHERE id=? AND status='paid' AND NOT EXISTS "
-                     "(SELECT 1 FROM payments WHERE client_id=? AND status='confirmed')", p["client_id"], p["client_id"])
+    await revert_paid_if_no_receipt(db, p["client_id"])  # «Оплачено» без квитанции не остаётся
     await db.audit(user["id"], f"Удалил квитанцию #{pid} ({fmt_money(p['amount'])}, {p['status']})")
     await cb.answer("🗑 Удалено")
     try:

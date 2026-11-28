@@ -150,7 +150,7 @@ async function api(path, { method = "GET", body, form } = {}, retried = false) {
   if (path.endsWith("/file")) { if (!res.ok) throw new Error("Файл недоступен"); return res.blob(); }
   let data = {};
   try { data = await res.json(); } catch (_) {}
-  if (!res.ok) throw new Error(data.error || "Ошибка " + res.status);
+  if (!res.ok) { const err = new Error(data.error || "Ошибка " + res.status); err.code = data.code; throw err; }
   try { localStorage.setItem("crm_api", API); } catch (_) {}
   return data;
 }
@@ -511,9 +511,13 @@ function ClientScreen(id) {
       const keys = Object.keys(ST);
       seg.replaceChildren(ind, ...keys.map((k) => h("button", { class: (c.status === k ? "on " : "") + k, onclick: async () => {
         if (c.status === k) return;
+        // «Оплачено» — только с квитанцией: сразу предлагаем прикрепить
+        if (k === "paid" && !c.payments.some((p) => p.status === "pending" || p.status === "confirmed")) {
+          haptic("warning"); return receiptSheet(c, true);
+        }
         const prev = c.status; c.status = k; drawSeg(); haptic("medium");
         try { await api("/api/clients/" + id, { method: "PATCH", body: { status: k } }); toast(ST[k]); }
-        catch (e) { c.status = prev; drawSeg(); toast(e.message, true); }
+        catch (e) { c.status = prev; drawSeg(); if (e.code === "receipt_required") receiptSheet(c, true); else toast(e.message, true); }
       } }, ST_IC[k] + " " + ST[k])));
       const i = keys.indexOf(c.status);
       ind.className = "ind " + c.status;
@@ -612,7 +616,7 @@ async function clientMenu(c) {
 }
 
 /* ---------- новая квитанция ---------- */
-async function receiptSheet(c) {
+async function receiptSheet(c, setPaid = false) {
   let file = null, reqId = c.requisite ? c.requisite.id : null;
   const preview = h("div");
   const fileInput = h("input", { type: "file", accept: "image/*,application/pdf", class: "hidden" });
@@ -639,17 +643,20 @@ async function receiptSheet(c) {
       draw();
     }
   }
-  const send = h("button", { class: "btn primary block", style: "margin-top:6px" }, icon("send", "sm"), "Отправить на проверку");
+  const send = h("button", { class: "btn primary block", style: "margin-top:6px" }, icon("send", "sm"), setPaid ? "Прикрепить и отметить «Оплачено»" : "Отправить на проверку");
   send.onclick = () => withLoading(send, async () => {
     if (!file) { shake(drop); throw new Error("Добавьте фото квитанции"); }
     const sum = amount.value.replace(/\s/g, "").replace(",", ".");
     if (!/^\d{1,9}(\.\d{1,2})?$/.test(sum) || Number(sum) <= 0) { shake(amount); throw new Error("Проверьте сумму"); }
     if (reqBox && !reqId) throw new Error("Выберите реквизит");
     const fd = new FormData(); fd.append("file", file); fd.append("amount", sum); if (reqId && !c.requisite) fd.append("requisite_id", reqId);
+    if (setPaid) fd.append("set_paid", "1");
     await api(`/api/clients/${c.id}/payments`, { method: "POST", form: fd });
-    closeSheet(true); toast(ME.admin ? "Квитанция добавлена" : "Отправлено на проверку"); refreshCurrent();
+    closeSheet(true); toast(setPaid ? "Квитанция прикреплена · ✅ Оплачено" : ME.admin ? "Квитанция добавлена" : "Отправлено на проверку"); refreshCurrent();
   });
-  openSheet("Квитанция · " + c.name, h("div", null, fileInput, drop, preview, h("div", { style: "height:12px" }),
+  openSheet(setPaid ? "Прикрепите квитанцию" : "Квитанция · " + c.name, h("div", null,
+    setPaid ? h("div", { class: "banner", style: "cursor:default" }, icon("alert", "sm"), h("div", { class: "grow" }, "Статус «Оплачено» ставится только с квитанцией")) : null,
+    fileInput, drop, preview, h("div", { style: "height:12px" }),
     field("Сумма, ₴", amount), reqBox ? field("Куда пришли деньги", reqBox) : null, send));
 }
 

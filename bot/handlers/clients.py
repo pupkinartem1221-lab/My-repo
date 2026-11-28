@@ -12,6 +12,7 @@ from ..notify import notify_admins, notify_user
 from ..ui import show
 from ..utils import (CLIENT_STATUSES, clip, esc, fit, fmt_money, fmt_short, is_admin, like_escape, now,
                      user_label, user_name)
+from ..rules import RECEIPT_REQUIRED, has_receipt
 from .requisites import req_copy_kb, req_for_client
 
 router = Router(name="clients")
@@ -221,7 +222,7 @@ async def client_card(cb: CallbackQuery, state: FSMContext, db: DB, user):
 
 
 @router.callback_query(F.data.startswith("cl:st:"))
-async def client_status(cb: CallbackQuery, db: DB, user, bot: Bot):
+async def client_status(cb: CallbackQuery, state: FSMContext, db: DB, user, bot: Bot):
     _, _, cid, st = cb.data.split(":")
     c = await get_client_for(db, user, int(cid))
     if c is None:
@@ -230,6 +231,12 @@ async def client_status(cb: CallbackQuery, db: DB, user, bot: Bot):
         return await cb.answer()
     if c["status"] == st:
         return await cb.answer("Уже так")
+    if st == "paid" and not await has_receipt(db, c["id"]):
+        # «Оплачено» только с квитанцией: сразу просим её прикрепить
+        from .payments import begin_receipt
+        await cb.answer(RECEIPT_REQUIRED, show_alert=True)
+        await begin_receipt(cb, state, c, set_paid=True)
+        return
     await db.run("UPDATE clients SET status=? WHERE id=?", st, c["id"])
     old, new = CLIENT_STATUSES.get(c["status"], c["status"]), CLIENT_STATUSES[st]
     await db.audit(user["id"], f"Клиент #{c['id']}: {old} → {new}")
