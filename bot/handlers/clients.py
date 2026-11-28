@@ -7,11 +7,11 @@ from aiogram.types import CallbackQuery, Message
 
 from ..db import DB
 from ..keyboards import (BLUE, BTN_CLIENTS, BTN_NEW_CLIENT, GREEN, RED, back_btn, btn, cancel_kb, confirm_kb,
-                         copy_btn, danger_btn, home_btn, kb, main_btn, pager)
+                         copy_btn, danger_btn, home_btn, kb, main_btn, pager, url_btn)
 from ..notify import notify_admins, notify_user
 from ..ui import show
-from ..utils import (CLIENT_STATUSES, clip, esc, fit, fmt_money, fmt_short, is_admin, like_escape, now,
-                     user_label, user_name)
+from ..utils import (CLIENT_STATUSES, clip, esc, fit, fmt_money, fmt_short, is_admin, like_escape, messenger_links,
+                     now, user_label, user_name)
 from ..rules import RECEIPT_REQUIRED, has_receipt
 from .requisites import req_copy_kb, req_for_client
 
@@ -195,7 +195,7 @@ async def card_view(db: DB, user, c, note: str = ""):
         [main_btn("🧾 Квитанция", f"pay:new:{cid}"), btn("💳 Реквизит", f"cl:rq:{cid}")],
         [b for b in (btn("💬 Комментарий", f"cl:cm:{cid}"), comments_btn) if b],
         [btn(f"💰 Оплаты · {sums['n']}", f"pay:cl:{cid}")]
-        + ([copy_btn("📋 Телефон", c["phone"])] if c["phone"] else []),
+        + ([btn("💬 Написать", f"cl:msg:{cid}")] if c["phone"] else []),
     ]
     if is_admin(user):
         rows.append([btn("👷 Передать", f"cl:w:{cid}"), danger_btn("🗑 Удалить", f"cl:del:{cid}")])
@@ -244,6 +244,27 @@ async def client_status(cb: CallbackQuery, state: FSMContext, db: DB, user, bot:
     await open_card(cb, db, user, c["id"])
     await notify_admins(bot, db, f"🔁 {user_name(user)}: {esc(c['name'])} → <b>{new}</b>",
                         exclude_user_id=user["id"], reply_markup=kb([main_btn("👤 Открыть", f"cl:v:{c['id']}")]))
+
+
+# ---------- связаться ----------
+
+@router.callback_query(F.data.startswith("cl:msg:"))
+async def client_contact(cb: CallbackQuery, db: DB, user):
+    c = await get_client_for(db, user, int(cb.data.split(":")[2]))
+    if c is None:
+        return await cb.answer("Нет доступа", show_alert=True)
+    links = messenger_links(c["phone"])
+    await cb.answer()
+    rows = []
+    if links:
+        rows.append([url_btn("🟢 WhatsApp", links["whatsapp"]), url_btn("✈️ Telegram", links["telegram"])])
+        rows.append([url_btn("🔵 Signal", links["signal"]), copy_btn("📋 Номер", c["phone"])])
+    else:
+        rows.append([copy_btn("📋 Скопировать номер", c["phone"] or "")])
+    rows.append([back_btn(f"cl:v:{c['id']}", "« К клиенту")])
+    note = "" if links else "\n\n⚠️ Номер в неполном формате — ссылки на мессенджеры недоступны."
+    await show(cb, f"💬 <b>{esc(c['name'])}</b>\n📞 <code>{esc(c['phone'] or '—')}</code>\n\n"
+                   f"Где написать клиенту?{note}", kb(*rows))
 
 
 # ---------- комментарии ----------
