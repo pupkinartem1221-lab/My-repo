@@ -53,6 +53,7 @@ class DataSync:
         self.old_password = old_password
         self.init_db = init_db
         self.remote_sha = ""  # "" — ветки ещё нет
+        self.extra_files: dict[str, str] = {}  # открытые файлы рядом с базой (например, api.json)
 
     @property
     def enabled(self) -> bool:
@@ -150,6 +151,9 @@ class DataSync:
                 f.write(blob)
             with open(os.path.join(d, "README.md"), "w") as f:
                 f.write("Зашифрованные данные CRM-бота. Не редактировать и не удалять.\n")
+            for name, content in self.extra_files.items():
+                with open(os.path.join(d, name), "w") as f:
+                    f.write(content)
             self._git("add", ".", cwd=d)
             self._git("-c", "user.name=crm-bot", "-c", "user.email=crm-bot@users.noreply.github.com",
                       "commit", "-q", "-m", "data", cwd=d)

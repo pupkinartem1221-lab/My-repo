@@ -39,6 +39,18 @@ jobs:
       - name: Install dependencies (точные версии с проверкой хешей)
         run: pip install --require-hashes --no-deps -r requirements.lock
 
+      - name: Install cloudflared (туннель для мини-приложения, с проверкой контрольной суммы)
+        continue-on-error: true
+        run: |
+          BIN="$RUNNER_TEMP/cloudflared"
+          curl -fsSL --retry 3 -o "$BIN" \
+            https://github.com/cloudflare/cloudflared/releases/download/2026.11.0/cloudflared-linux-amd64
+          echo "51f7c68b57ed7269164075d7e789efce5b59355982f06392deeb037d982a51fd  $BIN" | sha256sum -c -
+          chmod +x "$BIN"
+          echo "CLOUDFLARED=$BIN" >> "$GITHUB_ENV"
+          OWNER=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          echo "PAGES_URL=https://$OWNER.github.io/${GITHUB_REPOSITORY#*/}/" >> "$GITHUB_ENV"
+
       - name: Keep workflow enabled
         continue-on-error: true
         env:
