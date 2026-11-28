@@ -258,7 +258,7 @@ async def client_contact(cb: CallbackQuery, db: DB, user):
     rows = []
     if links:
         rows.append([url_btn("🟢 WhatsApp", links["whatsapp"]), url_btn("✈️ Telegram", links["telegram"])])
-        rows.append([url_btn("🔵 Signal", links["signal"]), copy_btn("📋 Номер", c["phone"])])
+        rows.append([copy_btn("📋 Скопировать номер", c["phone"])])
     else:
         rows.append([copy_btn("📋 Скопировать номер", c["phone"] or "")])
     rows.append([back_btn(f"cl:v:{c['id']}", "« К клиенту")])

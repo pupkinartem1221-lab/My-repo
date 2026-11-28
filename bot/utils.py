@@ -114,7 +114,6 @@ def messenger_links(phone: str | None) -> dict[str, str]:
     return {
         "whatsapp": f"https://wa.me/{d}",
         "telegram": f"https://t.me/+{d}",
-        "signal": f"https://signal.me/#p/+{d}",
     }
 
 
