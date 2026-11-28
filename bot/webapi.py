@@ -14,7 +14,10 @@ import time
 from datetime import timedelta
 from urllib.parse import parse_qsl
 
+import sqlite3
+
 from aiogram import Bot
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.types import BufferedInputFile
 from aiohttp import web
 
@@ -22,9 +25,11 @@ from .db import DB
 from .handlers.staff import USERNAME_RE, can_approve, can_manage, can_set_percent
 from .middleware import PENDING_TTL
 from .notify import notify_admins, notify_all, notify_user, send_safe, with_hide
+from .ui import clear_chat
 from .keyboards import btn, danger_btn, kb, main_btn, ok_btn
 from .reports import PERIODS, period
-from .rules import RECEIPT_REQUIRED, has_receipt, revert_paid_if_no_receipt, set_percent, worker_total
+from .rules import (RECEIPT_REQUIRED, blocks_delete, confirm_payment, delete_payment, payments_scope, reject_payment,
+                    set_percent, set_status, worker_total)
 from .utils import (CLIENT_STATUSES, ROLES, TZ, day_range, deleted_req_label, esc, fmt_money, iban_ok, ipn_checksum_ok, is_admin,
                     like_escape, now, parse_money, today, user_name)
 
@@ -32,7 +37,6 @@ log = logging.getLogger(__name__)
 MAX_AGE = 12 * 3600
 ALLOWED_MIME = {"image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "application/pdf"}
 PHONE = "replace(replace(replace(replace(replace(phone,'+',''),' ',''),'-',''),'(',''),')','')"
-SHARE_SQL = "CAST(amount * COALESCE(worker_percent, 0) / 100.0 + 0.5 AS INTEGER)"
 
 
 class ApiError(Exception):
@@ -68,7 +72,7 @@ def bad(message: str, status: int = 400, code: str | None = None):
 
 
 def as_id(value) -> int:
-    if isinstance(value, bool) or not str(value).isdigit():
+    if isinstance(value, bool) or not re.fullmatch(r"[0-9]{1,18}", str(value)):
         bad("Неверные данные, обновите экран")
     return int(value)
 
@@ -86,6 +90,15 @@ def sniff_file(content: bytes):
     if content.startswith(b"%PDF-"):
         return "application/pdf", "receipt.pdf", False
     return None
+
+
+def text(value, limit: int) -> str:
+    """Строка из JSON: числа/null/списки не роняют сервер."""
+    if value is None:
+        return ""
+    if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+        bad("Неверные данные, обновите экран")
+    return str(value)[:limit * 2]
 
 
 def need_admin(user):
@@ -169,24 +182,24 @@ class Api:
         r.add_get("/api/dashboard", self.dashboard)
         r.add_get("/api/clients", self.clients)
         r.add_post("/api/clients", self.client_create)
-        r.add_get("/api/clients/{id:\\d+}", self.client_get)
-        r.add_patch("/api/clients/{id:\\d+}", self.client_patch)
-        r.add_delete("/api/clients/{id:\\d+}", self.client_delete)
-        r.add_post("/api/clients/{id:\\d+}/comments", self.comment_add)
-        r.add_post("/api/clients/{id:\\d+}/payments", self.payment_create)
+        r.add_get("/api/clients/{id:[0-9]{1,18}}", self.client_get)
+        r.add_patch("/api/clients/{id:[0-9]{1,18}}", self.client_patch)
+        r.add_delete("/api/clients/{id:[0-9]{1,18}}", self.client_delete)
+        r.add_post("/api/clients/{id:[0-9]{1,18}}/comments", self.comment_add)
+        r.add_post("/api/clients/{id:[0-9]{1,18}}/payments", self.payment_create)
         r.add_get("/api/payments", self.payments)
-        r.add_post("/api/payments/{id:\\d+}/review", self.payment_review)
-        r.add_delete("/api/payments/{id:\\d+}", self.payment_delete)
-        r.add_get("/api/payments/{id:\\d+}/file", self.payment_file)
+        r.add_post("/api/payments/{id:[0-9]{1,18}}/review", self.payment_review)
+        r.add_delete("/api/payments/{id:[0-9]{1,18}}", self.payment_delete)
+        r.add_get("/api/payments/{id:[0-9]{1,18}}/file", self.payment_file)
         r.add_get("/api/requisites", self.requisites)
         r.add_post("/api/requisites", self.requisite_create)
-        r.add_patch("/api/requisites/{id:\\d+}", self.requisite_patch)
-        r.add_delete("/api/requisites/{id:\\d+}", self.requisite_delete)
+        r.add_patch("/api/requisites/{id:[0-9]{1,18}}", self.requisite_patch)
+        r.add_delete("/api/requisites/{id:[0-9]{1,18}}", self.requisite_delete)
         r.add_get("/api/team", self.team)
         r.add_post("/api/team", self.team_invite)
-        r.add_patch("/api/team/{id:\\d+}", self.team_patch)
-        r.add_post("/api/team/{id:\\d+}/approve", self.team_approve)
-        r.add_delete("/api/team/{id:\\d+}", self.team_delete)
+        r.add_patch("/api/team/{id:[0-9]{1,18}}", self.team_patch)
+        r.add_post("/api/team/{id:[0-9]{1,18}}/approve", self.team_approve)
+        r.add_delete("/api/team/{id:[0-9]{1,18}}", self.team_delete)
         r.add_get("/api/reports", self.reports)
         r.add_get("/api/audit", self.audit)
         if self.static_dir:  # приложение можно открыть и прямо через туннель (если GitHub Pages не включён)
@@ -232,8 +245,8 @@ class Api:
                                f"FROM payments WHERE status='confirmed' AND reviewed_at>=? AND reviewed_at<?{scope}",
                                s, e, *sp)
             week.append({"label": d.strftime("%d.%m"), "amount": row["a"], "share": row["sh"], "count": row["n"]})
-        pscope, pp = ("", []) if admin else (" AND (worker_id=? OR submitted_by=?)", [u["id"], u["id"]])
-        pend = await db.one(f"SELECT COUNT(*) n, COALESCE(SUM(amount),0) s FROM payments WHERE status='pending'{pscope}", *pp)
+        pscope, pp = ("", []) if admin else (" AND " + payments_scope("p"), [u["id"]] * 3)
+        pend = await db.one(f"SELECT COUNT(*) n, COALESCE(SUM(p.amount),0) s FROM payments p WHERE p.status='pending'{pscope}", *pp)
         cscope, cp = ("", []) if admin else (" WHERE worker_id=?", [u["id"]])
         clients = await db.one(f"SELECT COUNT(*) n, SUM(status='work') w, "
                                f"SUM(status='work' AND requisite_id IS NULL) noreq FROM clients{cscope}", *cp)
@@ -249,8 +262,8 @@ class Api:
                         "share": r["worker_share"], "at": r["reviewed_at"], "worker": r["wnick"]} for r in recent],
         }
         if admin:
-            result["waiting_access"] = (await db.one(
-                "SELECT COUNT(*) n FROM users WHERE tg_id IS NOT NULL AND approved=0"))["n"]
+            waiting = await db.all("SELECT * FROM users WHERE tg_id IS NOT NULL AND approved=0")
+            result["waiting_access"] = sum(1 for w in waiting if can_approve(u, w))
         return web.json_response(result)
 
     # ---------- клиенты ----------
@@ -287,9 +300,9 @@ class Api:
     async def client_create(self, request):
         u, db = request["user"], self.db
         data = await self.body(request)
-        name = " ".join(str(data.get("name", "")).split())
-        phone = " ".join(str(data.get("phone", "")).split())
-        comment = str(data.get("comment") or "").strip()[:1500]
+        name = " ".join(text(data.get("name"), 100).split())
+        phone = " ".join(text(data.get("phone"), 25).split())
+        comment = text(data.get("comment"), 1500).strip()[:1500]
         if not 1 <= len(name) <= 100:
             bad("Укажите имя (до 100 символов)")
         if not re.fullmatch(r"\+?[\d\s\-()]{7,25}", phone) or len(re.sub(r"\D", "", phone)) < 7:
@@ -317,7 +330,7 @@ class Api:
 
     async def client_get(self, request):
         u, db = request["user"], self.db
-        c = await self.client_for(u, int(request.match_info["id"]))
+        c = await self.client_for(u, as_id(request.match_info["id"]))
         worker = await db.get_user(c["worker_id"])
         req = await db.one("SELECT * FROM requisites WHERE id=?", c["requisite_id"]) if c["requisite_id"] else None
         comments = await db.all("SELECT cm.*, u.nick FROM comments cm LEFT JOIN users u ON u.id=cm.author_id "
@@ -337,30 +350,22 @@ class Api:
 
     async def client_patch(self, request):
         u, db = request["user"], self.db
-        c = await self.client_for(u, int(request.match_info["id"]))
+        c = await self.client_for(u, as_id(request.match_info["id"]))
         data = await self.body(request)
+        # 1) сначала проверяем всё, 2) потом меняем — чтобы ошибка не оставила изменения «наполовину»
+        name = phone = st = w = None
+        rid = c["requisite_id"]
         if "name" in data or "phone" in data:
-            name = " ".join(str(data.get("name", c["name"])).split())
-            phone = " ".join(str(data.get("phone", c["phone"] or "")).split())
+            name = " ".join(text(data.get("name", c["name"]), 100).split())
+            phone = " ".join(text(data.get("phone", c["phone"] or ""), 25).split())
             if not 1 <= len(name) <= 100:
                 bad("Укажите имя (до 100 символов)")
             if not re.fullmatch(r"\+?[\d\s\-()]{7,25}", phone) or len(re.sub(r"\D", "", phone)) < 7:
                 bad("Проверьте телефон")
-            if (name, phone) != (c["name"], c["phone"]):
-                await db.run("UPDATE clients SET name=?, phone=? WHERE id=?", name, phone, c["id"])
-                await db.audit(u["id"], f"Клиент #{c['id']}: изменены данные [приложение]")
         if "status" in data:
             st = data["status"]
-            if st not in CLIENT_STATUSES:
+            if not isinstance(st, str) or st not in CLIENT_STATUSES:
                 bad("Неизвестный статус")
-            if st == "paid" and st != c["status"] and not await has_receipt(db, c["id"]):
-                bad(RECEIPT_REQUIRED, 409, "receipt_required")
-            if st != c["status"]:
-                await db.run("UPDATE clients SET status=? WHERE id=?", st, c["id"])
-                old, new = CLIENT_STATUSES[c["status"]], CLIENT_STATUSES[st]
-                await db.audit(u["id"], f"Клиент #{c['id']}: {old} → {new} [приложение]")
-                _bg(notify_admins(self.bot, db, f"🔁 {user_name(u)}: {esc(c['name'])} → <b>{new}</b>",
-                                  exclude_user_id=u["id"], reply_markup=kb([main_btn("👤 Открыть", f"cl:v:{c['id']}")])))
         if "requisite_id" in data:
             rid = data["requisite_id"]
             if rid:
@@ -368,30 +373,44 @@ class Api:
                 if r is None:
                     bad("Реквизит нерабочий или удалён")
                 rid = r["id"]
-            await db.run("UPDATE clients SET requisite_id=? WHERE id=?", rid or None, c["id"])
-            await db.audit(u["id"], f"Клиент #{c['id']}: реквизит → {('#' + str(rid)) if rid else 'отвязан'} [приложение]")
+            else:
+                rid = None
         if "worker_id" in data:
             need_admin(u)
             w = await db.one("SELECT * FROM users WHERE id=? AND nick IS NOT NULL AND approved=1", as_id(data["worker_id"]))
             if w is None:
                 bad("Сотрудник не найден")
-            if w["id"] != c["worker_id"]:
-                await db.run_many([
-                    ("UPDATE clients SET worker_id=? WHERE id=?", w["id"], c["id"]),
-                    ("UPDATE payments SET worker_id=? WHERE client_id=? AND status='pending'", w["id"], c["id"]),
-                ])
-                await db.audit(u["id"], f"Клиент #{c['id']} передан {w['nick']} [приложение]")
-                if c["worker_id"] and c["worker_id"] not in (u["id"], w["id"]):
-                    _bg(notify_user(self.bot, db, c["worker_id"], f"📤 Клиент {esc(c['name'])} передан другому сотруднику."))
-                if w["id"] != u["id"]:
-                    _bg(notify_user(self.bot, db, w["id"], f"📥 Вам передан клиент <b>{esc(c['name'])}</b>",
-                                    kb([main_btn("👤 Открыть", f"cl:v:{c['id']}")])))
+
+        open_kb = kb([main_btn("👤 Открыть", f"cl:v:{c['id']}")])
+        if name is not None and (name, phone) != (c["name"], c["phone"]):
+            await db.run("UPDATE clients SET name=?, phone=? WHERE id=?", name, phone, c["id"])
+            await db.audit(u["id"], f"Клиент #{c['id']}: изменены данные [приложение]")
+        if st is not None and st != c["status"]:
+            if not await set_status(db, c["id"], st):
+                bad(RECEIPT_REQUIRED, 409, "receipt_required")
+            old, new = CLIENT_STATUSES[c["status"]], CLIENT_STATUSES[st]
+            await db.audit(u["id"], f"Клиент #{c['id']}: {old} → {new} [приложение]")
+            _bg(notify_admins(self.bot, db, f"🔁 {user_name(u)}: {esc(c['name'])} → <b>{new}</b>",
+                              exclude_user_id=u["id"], reply_markup=open_kb))
+        if "requisite_id" in data and rid != c["requisite_id"]:
+            await db.run("UPDATE clients SET requisite_id=? WHERE id=?", rid, c["id"])
+            await db.audit(u["id"], f"Клиент #{c['id']}: реквизит → {('#' + str(rid)) if rid else 'отвязан'} [приложение]")
+        if w is not None and w["id"] != c["worker_id"]:
+            await db.run_many([
+                ("UPDATE clients SET worker_id=? WHERE id=?", w["id"], c["id"]),
+                ("UPDATE payments SET worker_id=? WHERE client_id=? AND status='pending'", w["id"], c["id"]),
+            ])
+            await db.audit(u["id"], f"Клиент #{c['id']} передан {w['nick']} [приложение]")
+            if c["worker_id"] and c["worker_id"] not in (u["id"], w["id"]):
+                _bg(notify_user(self.bot, db, c["worker_id"], f"📤 Клиент {esc(c['name'])} передан другому сотруднику."))
+            if w["id"] != u["id"]:
+                _bg(notify_user(self.bot, db, w["id"], f"📥 Вам передан клиент <b>{esc(c['name'])}</b>", open_kb))
         return web.json_response({"ok": True})
 
     async def client_delete(self, request):
         u, db = request["user"], self.db
         need_admin(u)
-        c = await self.client_for(u, int(request.match_info["id"]))
+        c = await self.client_for(u, as_id(request.match_info["id"]))
         await db.run("DELETE FROM clients WHERE id=?", c["id"])
         await db.audit(u["id"], f"Удалил клиента #{c['id']} {c['name']} [приложение]")
         _bg(notify_admins(self.bot, db, f"🗑 {user_name(u)} удалил клиента {esc(c['name'])}", exclude_user_id=u["id"]))
@@ -399,15 +418,15 @@ class Api:
 
     async def comment_add(self, request):
         u, db = request["user"], self.db
-        c = await self.client_for(u, int(request.match_info["id"]))
-        text = str((await self.body(request)).get("text", "")).strip()
-        if not text:
+        c = await self.client_for(u, as_id(request.match_info["id"]))
+        body = text((await self.body(request)).get("text"), 1500).strip()[:1500]
+        if not body:
             bad("Пустой комментарий")
+        ts = now()
         cur = await db.run("INSERT INTO comments(client_id, author_id, text, created_at) VALUES (?, ?, ?, ?)",
-                           c["id"], u["id"], text[:1500], now())
+                           c["id"], u["id"], body, ts)
         await db.audit(u["id"], f"Комментарий к клиенту #{c['id']} [приложение]")
-        return web.json_response({"id": cur.lastrowid, "text": text[:1500], "author": u["nick"], "at": now()},
-                                 status=201)
+        return web.json_response({"id": cur.lastrowid, "text": body, "author": u["nick"], "at": ts}, status=201)
 
     # ---------- квитанции ----------
 
@@ -426,8 +445,8 @@ class Api:
             bad("Неизвестный статус")
         where, params = "p.status=?", [status]
         if not is_admin(u):
-            where += " AND (p.worker_id=? OR p.submitted_by=?)"
-            params += [u["id"], u["id"]]
+            where += " AND " + payments_scope("p")
+            params += [u["id"]] * 3
         rows = await db.all(f"SELECT p.*, w.nick wnick, s.nick snick, r.nick rnick, c.phone cphone FROM payments p "
                             "LEFT JOIN users w ON w.id=p.worker_id LEFT JOIN users s ON s.id=p.submitted_by "
                             "LEFT JOIN users r ON r.id=p.reviewed_by LEFT JOIN clients c ON c.id=p.client_id "
@@ -442,7 +461,7 @@ class Api:
 
     async def payment_create(self, request):
         u, db = request["user"], self.db
-        c = await self.client_for(u, int(request.match_info["id"]))
+        c = await self.client_for(u, as_id(request.match_info["id"]))
         self.rate(u["id"], 10, 60)
         if (request.content_length or 0) > 21 * 1024 * 1024:
             bad("Файл слишком большой (до 20 МБ)", 413)
@@ -467,40 +486,52 @@ class Api:
         req = await db.one("SELECT * FROM requisites WHERE id=?", as_id(rid)) if rid else None
         if rid and form.get("requisite_id") and (req is None or not req["is_active"]):
             bad("Реквизит нерабочий")
+        if len(content) > 10 * 1024 * 1024:
+            is_photo = False  # Telegram принимает фото до 10 МБ — большие отправляем файлом
 
         # Файл храним в Telegram: отправляем его админам (это и есть уведомление) и берём file_id.
         admins = await db.all("SELECT * FROM users WHERE role IN ('owner','admin') AND tg_id IS NOT NULL "
                               "AND approved=1 ORDER BY id<>? , id", u["id"])
         file_id, file_type, first_msg = None, ("photo" if is_photo else "document"), None
         caption = f"🔔 Новая квитанция · {fmt_money(amount)}\n👤 {esc(c['name'])}\n👷 {user_name(u)}"
-        for a in admins:
-            try:
-                upload = BufferedInputFile(content, filename=name)
-                if is_photo:
-                    m = await self.bot.send_photo(a["tg_id"], upload, caption=caption)
-                    file_id = m.photo[-1].file_id
-                else:
-                    m = await self.bot.send_document(a["tg_id"], upload, caption=caption)
-                    file_id = m.document.file_id
-                first_msg = (a, m)
-                break
-            except Exception:
-                continue
+        async with self.upload_sem:
+            for a in admins:
+                for as_photo in ((True, False) if is_photo else (False,)):
+                    try:
+                        upload = BufferedInputFile(content, filename=name)
+                        if as_photo:
+                            m = await self.bot.send_photo(a["tg_id"], upload, caption=caption)
+                            file_id, file_type = m.photo[-1].file_id, "photo"
+                        else:
+                            m = await self.bot.send_document(a["tg_id"], upload, caption=caption)
+                            file_id, file_type = m.document.file_id, "document"
+                        first_msg = (a, m)
+                        break
+                    except TelegramBadRequest:
+                        continue  # фото не принято (размер/формат) — пробуем файлом
+                    except Exception:
+                        break
+                if file_id:
+                    break
         if file_id is None:
             bad("Не удалось сохранить файл, попробуйте ещё раз", 502)
 
+        # пока файл загружался, клиента могли удалить или передать — перечитываем
+        c = await db.one("SELECT * FROM clients WHERE id=?", c["id"])
+        if c is None or not (is_admin(u) or c["worker_id"] == u["id"]):
+            bad("Клиент не найден", 404)
         label = f"{req['iban']} ({req['holder']})" if req else None
         cur = await db.run(
             "INSERT INTO payments(client_id, client_name, requisite_id, requisite_label, worker_id, amount, "
-            "file_id, file_type, status, submitted_by, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
-            c["id"], c["name"], req["id"] if req else None, label, c["worker_id"], amount, file_id, file_type,
+            "file_id, file_type, status, submitted_by, submitted_at) VALUES (?, ?, ?, ?, "
+            "(SELECT worker_id FROM clients WHERE id=?), ?, ?, ?, 'pending', ?, ?)",
+            c["id"], c["name"], req["id"] if req else None, label, c["id"], amount, file_id, file_type,
             u["id"], now())
         pid = cur.lastrowid
         if req and not c["requisite_id"] and req["is_active"]:
             await db.run("UPDATE clients SET requisite_id=? WHERE id=?", req["id"], c["id"])
         await db.audit(u["id"], f"Квитанция #{pid}: клиент #{c['id']}, {fmt_money(amount)} [приложение]")
-        if form.get("set_paid") == "1" and c["status"] != "paid":
-            await db.run("UPDATE clients SET status='paid' WHERE id=?", c["id"])
+        if form.get("set_paid") == "1" and c["status"] != "paid" and await set_status(db, c["id"], "paid"):
             await db.audit(u["id"], f"Клиент #{c['id']}: → ✅ Оплачено (с квитанцией #{pid}) [приложение]")
 
         review = kb([ok_btn("✅ Подтвердить", f"pay:ok:{pid}"), danger_btn("❌ Отклонить", f"pay:no:{pid}")],
@@ -533,29 +564,22 @@ class Api:
     async def payment_review(self, request):
         u, db = request["user"], self.db
         need_admin(u)
-        pid = int(request.match_info["id"])
+        pid = as_id(request.match_info["id"])
         action = (await self.body(request)).get("action")
         if action not in ("ok", "no"):
             bad("Неизвестное действие")
+        reverted = False
         if action == "ok":
-            cur = await db.run(
-                "UPDATE payments SET status='confirmed', reviewed_by=?, reviewed_at=?, "
-                "worker_percent=(SELECT percent FROM users WHERE users.id=payments.worker_id) "
-                "WHERE id=? AND status='pending'", u["id"], now(), pid)
-            if cur.rowcount:
-                await db.run(f"UPDATE payments SET worker_share={SHARE_SQL} WHERE id=?", pid)
+            changed = await confirm_payment(db, pid, u["id"], now())
         else:
-            cur = await db.run("UPDATE payments SET status='rejected', reviewed_by=?, reviewed_at=? "
-                               "WHERE id=? AND status='pending'", u["id"], now(), pid)
+            changed, reverted = await reject_payment(db, pid, u["id"], now())
         p = await db.one("SELECT * FROM payments WHERE id=?", pid)
         if p is None:
             bad("Квитанция удалена", 404)
-        if cur.rowcount == 0:
+        if not changed:
             bad("Уже проверена", 409)
         name, amount = esc(p["client_name"]), fmt_money(p["amount"])
         if action == "ok":
-            if p["client_id"]:
-                await db.run("UPDATE clients SET status='paid' WHERE id=?", p["client_id"])
             await db.audit(u["id"], f"Подтвердил квитанцию #{pid} ({amount}) [приложение]")
             worker_text = f"✅ Оплата подтверждена: {name} · {amount}\n💵 Ваш заработок: <b>{fmt_money(p['worker_share'])}</b>"
             sub_text = f"✅ Оплата подтверждена: {name} · {amount}"
@@ -563,7 +587,7 @@ class Api:
         else:
             await db.audit(u["id"], f"Отклонил квитанцию #{pid} ({amount}) [приложение]")
             worker_text = sub_text = f"❌ Квитанция отклонена: {name} · {amount}"
-            if await revert_paid_if_no_receipt(db, p["client_id"]):
+            if reverted:
                 worker_text = sub_text = worker_text + "\nСтатус клиента вернулся в 🔄 В работе"
             other = f"❌ {user_name(u)} отклонил: {name} · {amount}"
         open_kb = kb([main_btn("👤 Открыть клиента", f"cl:v:{p['client_id']}")]) if p["client_id"] else None
@@ -583,11 +607,10 @@ class Api:
     async def payment_delete(self, request):
         u, db = request["user"], self.db
         need_admin(u)
-        pid = int(request.match_info["id"])
+        pid = as_id(request.match_info["id"])
         p = await db.one("SELECT * FROM payments WHERE id=?", pid)
-        if p is None or (await db.run("DELETE FROM payments WHERE id=?", pid)).rowcount == 0:
+        if p is None or not await delete_payment(db, pid, p["client_id"]):  # «Оплачено» без квитанции не остаётся
             bad("Уже удалена", 404)
-        await revert_paid_if_no_receipt(db, p["client_id"])  # «Оплачено» без квитанции не остаётся
         await db.audit(u["id"], f"Удалил квитанцию #{pid} ({fmt_money(p['amount'])}, {p['status']}) [приложение]")
         if p["status"] == "confirmed" and p["worker_id"] and p["worker_id"] != u["id"]:
             _bg(notify_user(self.bot, db, p["worker_id"], f"⚠️ Удалена квитанция: {esc(p['client_name'])} · "
@@ -598,23 +621,34 @@ class Api:
 
     async def payment_file(self, request):
         u, db = request["user"], self.db
-        p = await db.one("SELECT * FROM payments WHERE id=?", int(request.match_info["id"]))
+        p = await db.one("SELECT * FROM payments WHERE id=?", as_id(request.match_info["id"]))
         if p is None:
             bad("Не найдено", 404)
-        allowed = is_admin(u) or p["submitted_by"] == u["id"] or p["worker_id"] == u["id"]
+        allowed = is_admin(u)
+        if not allowed:
+            allowed = await db.one(f"SELECT 1 FROM payments p WHERE p.id=? AND {payments_scope('p')}",
+                                   p["id"], *[u["id"]] * 3) is not None
         if not allowed and p["client_id"]:
             c = await db.one("SELECT worker_id FROM clients WHERE id=?", p["client_id"])
             allowed = bool(c and c["worker_id"] == u["id"])
         if not allowed:
             bad("Не найдено", 404)
-        f = await self.bot.get_file(p["file_id"])
-        data = await self.bot.download_file(f.file_path)
-        ctype = "image/jpeg" if p["file_type"] == "photo" else (
-            "application/pdf" if (f.file_path or "").lower().endswith(".pdf") else "application/octet-stream")
+        try:
+            f = await self.bot.get_file(p["file_id"])
+            data = (await self.bot.download_file(f.file_path)).read()
+        except TelegramAPIError:
+            bad("Файл недоступен (больше 20 МБ или удалён в Telegram) — откройте его в боте", 502)
+        sniffed = sniff_file(data)
+        if p["file_type"] == "photo":
+            ctype, fname = "image/jpeg", "receipt.jpg"
+        elif sniffed:
+            ctype, fname = sniffed[0], sniffed[1]
+        else:
+            ctype, fname = "application/octet-stream", "receipt.bin"
         headers = {"Content-Security-Policy": "default-src 'none'; sandbox"}
-        if not ctype.startswith("image/"):
-            headers["Content-Disposition"] = "attachment; filename=receipt.pdf"
-        return web.Response(body=data.read(), content_type=ctype, headers=headers)
+        if ctype not in ("image/jpeg", "image/png", "image/webp"):
+            headers["Content-Disposition"] = f"attachment; filename={fname}"
+        return web.Response(body=data, content_type=ctype, headers=headers)
 
     # ---------- реквизиты ----------
 
@@ -640,15 +674,15 @@ class Api:
         u, db = request["user"], self.db
         need_admin(u)
         data = await self.body(request)
-        iban = re.sub(r"\s+", "", str(data.get("iban", ""))).upper()
-        holder = " ".join(str(data.get("holder", "")).split())
-        ipn = re.sub(r"\s+", "", str(data.get("ipn", "")))
-        comment = str(data.get("comment") or "").strip()[:500] or None
+        iban = re.sub(r"\s+", "", text(data.get("iban"), 40)).upper()
+        holder = " ".join(text(data.get("holder"), 120).split())
+        ipn = re.sub(r"\s+", "", text(data.get("ipn"), 12))
+        comment = text(data.get("comment"), 500).strip()[:500] or None
         if not iban_ok(iban):
             bad("IBAN с ошибкой — проверьте цифры")
         if not 3 <= len(holder) <= 120:
             bad("Укажите ФИО получателя")
-        if not re.fullmatch(r"\d{10}", ipn):
+        if not re.fullmatch(r"[0-9]{10}", ipn):
             bad("ІПН — 10 цифр")
         cur = await db.run("INSERT INTO requisites(iban, holder, ipn, comment, is_active, created_by, created_at) "
                            "VALUES (?, ?, ?, ?, 1, ?, ?)", iban, holder, ipn, comment, u["id"], now())
@@ -660,11 +694,15 @@ class Api:
     async def requisite_patch(self, request):
         u, db = request["user"], self.db
         need_admin(u)
-        rid = int(request.match_info["id"])
+        rid = as_id(request.match_info["id"])
         r = await db.one("SELECT * FROM requisites WHERE id=?", rid)
         if r is None:
             bad("Реквизит не найден", 404)
         data = await self.body(request)
+        if "active" in data and not isinstance(data["active"], bool):
+            bad("Неверные данные, обновите экран")
+        if "comment" in data:
+            new_comment = text(data["comment"], 500).strip()[:500] or None
         if "active" in data:
             new = 1 if data["active"] else 0
             if new != r["is_active"]:
@@ -674,14 +712,14 @@ class Api:
                 _bg(notify_all(self.bot, db, f"💳 …{esc(r['iban'][-6:])} {esc(r['holder'])} — теперь <b>{status}</b>",
                                exclude_user_id=u["id"]))
         if "comment" in data:
-            await db.run("UPDATE requisites SET comment=? WHERE id=?", str(data["comment"] or "").strip()[:500] or None, rid)
+            await db.run("UPDATE requisites SET comment=? WHERE id=?", new_comment, rid)
             await db.audit(u["id"], f"Изменил комментарий реквизита #{rid} [приложение]")
         return web.json_response({"ok": True})
 
     async def requisite_delete(self, request):
         u, db = request["user"], self.db
         need_admin(u)
-        rid = int(request.match_info["id"])
+        rid = as_id(request.match_info["id"])
         r = await db.one("SELECT * FROM requisites WHERE id=?", rid)
         if r is None:
             bad("Уже удалён", 404)
@@ -720,9 +758,9 @@ class Api:
         need_admin(u)
         data = await self.body(request)
         role = data.get("role", "worker")
-        if role not in ("worker", "admin") or (role == "admin" and u["role"] != "owner"):
+        if not isinstance(role, str) or role not in ("worker", "admin") or (role == "admin" and u["role"] != "owner"):
             bad("Нет доступа", 403)
-        username = re.sub(r"^(https?://)?t\.me/", "", str(data.get("username", "")).strip().lower()).lstrip("@")
+        username = re.sub(r"^(https?://)?t\.me/", "", text(data.get("username"), 64).strip().lower()).lstrip("@")
         if not USERNAME_RE.fullmatch(username):
             bad("Это не похоже на @username")
         existing = await db.one("SELECT * FROM users WHERE username=?", username)
@@ -730,8 +768,11 @@ class Api:
             bad("Этот человек уже в команде")
         if existing:
             await db.run("DELETE FROM users WHERE id=?", existing["id"])
-        cur = await db.run("INSERT INTO users(username, role, percent, added_by, created_at, approved) "
-                           "VALUES (?, ?, 50, ?, ?, 0)", username, role, u["id"], now())
+        try:
+            cur = await db.run("INSERT INTO users(username, role, percent, added_by, created_at, approved) "
+                               "VALUES (?, ?, 50, ?, ?, 0)", username, role, u["id"], now())
+        except sqlite3.IntegrityError:
+            bad("Этот человек уже в команде", 409)
         await db.audit(u["id"], f"Пригласил {ROLES[role]} @{username} [приложение]")
         _bg(notify_admins(self.bot, db, f"➕ {user_name(u)} пригласил {ROLES[role]} @{esc(username)}",
                           exclude_user_id=u["id"]))
@@ -739,7 +780,7 @@ class Api:
 
     async def team_patch(self, request):
         u, db = request["user"], self.db
-        t = await db.get_user(int(request.match_info["id"]))
+        t = await db.get_user(as_id(request.match_info["id"]))
         if t is None:
             bad("Сотрудник не найден", 404)
         data = await self.body(request)
@@ -747,8 +788,10 @@ class Api:
             if not can_set_percent(u, t):
                 bad("Нет доступа", 403)
             try:
+                if isinstance(data["percent"], bool):
+                    raise TypeError
                 value = round(float(data["percent"]), 2)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 value = -1
             if not 0 <= value <= 100:
                 bad("Нужно число от 0 до 100")
@@ -756,9 +799,9 @@ class Api:
             total = await worker_total(db, t["id"])
             await db.audit(u["id"], f"Процент {t['nick'] or t['username']}: {t['percent']:g}% → {value:g}% "
                                     f"(пересчитано оплат: {n}) [приложение]")
-            if t["id"] != u["id"] and t["tg_id"]:
-                _bg(send_safe(self.bot, t["tg_id"], f"💯 Ваш процент теперь <b>{value:g}%</b>\n"
-                                                    f"Заработок пересчитан: <b>{fmt_money(total)}</b>"))
+            if t["id"] != u["id"] and t["tg_id"] and t["approved"]:
+                _bg(notify_user(self.bot, db, t["id"], f"💯 Ваш процент теперь <b>{value:g}%</b>\n"
+                                                       f"Заработок пересчитан: <b>{fmt_money(total)}</b>"))
             _bg(notify_admins(self.bot, db, f"💯 {user_name(u)}: процент {user_name(t)} {t['percent']:g}% → {value:g}%",
                               exclude_user_id=u["id"]))
             return web.json_response({"ok": True, "recalculated": n, "total": total})
@@ -766,14 +809,16 @@ class Api:
 
     async def team_approve(self, request):
         u, db = request["user"], self.db
-        t = await db.get_user(int(request.match_info["id"]))
+        t = await db.get_user(as_id(request.match_info["id"]))
         if t is None:
             bad("Запрос уже обработан", 409)
         if not can_approve(u, t):
             bad("Нет доступа", 403)
         if t["approved"] or not t["tg_id"]:
             bad("Запрос уже обработан", 409)
-        ok = bool((await self.body(request)).get("ok"))
+        ok = (await self.body(request)).get("ok")
+        if not isinstance(ok, bool):
+            bad("Неверные данные, обновите экран")
         name = "@" + (t["username"] or "?")
         if ok:
             if (await db.run("UPDATE users SET approved=1 WHERE id=? AND approved=0", t["id"])).rowcount != 1:
@@ -782,22 +827,30 @@ class Api:
             _bg(send_safe(self.bot, t["tg_id"], "✅ Доступ открыт! Нажмите /start"))
             _bg(notify_admins(self.bot, db, f"✅ {user_name(u)} подтвердил доступ {esc(name)}", exclude_user_id=u["id"]))
         else:
-            await db.run("DELETE FROM users WHERE id=? AND approved=0", t["id"])
+            if (await db.run("DELETE FROM users WHERE id=? AND approved=0", t["id"])).rowcount != 1:
+                bad("Запрос уже обработан", 409)
             await db.run("DELETE FROM fsm WHERE key LIKE ?", f"%:{t['tg_id']}:{t['tg_id']}:%")
-            await db.run("DELETE FROM ui WHERE tg_id=?", t["tg_id"])
+            await clear_chat(self.bot, t["tg_id"])
             await db.audit(u["id"], f"Отклонил доступ {name} (Telegram ID {t['tg_id']}) [приложение]")
             _bg(notify_admins(self.bot, db, f"❌ {user_name(u)} отклонил доступ {esc(name)}", exclude_user_id=u["id"]))
         return web.json_response({"ok": True})
 
     async def team_delete(self, request):
         u, db = request["user"], self.db
-        t = await db.get_user(int(request.match_info["id"]))
-        if t is None or not can_manage(u, t):
+        t = await db.get_user(as_id(request.match_info["id"]))
+        if t is None:
+            bad("Уже удалён", 404)
+        if not can_manage(u, t):
             bad("Нет доступа", 403)
+        reason = await blocks_delete(db, t["id"])
+        if reason:
+            bad(reason, 409)
         if t["tg_id"]:
-            await db.run("DELETE FROM fsm WHERE key LIKE ?", f"%:{t['tg_id']}:{t['tg_id']}:%")
-            await db.run("DELETE FROM ui WHERE tg_id=?", t["tg_id"])
-        await db.run("DELETE FROM users WHERE id=?", t["id"])
+            await clear_chat(self.bot, t["tg_id"])
+        stmts = [("DELETE FROM users WHERE id=?", t["id"])]
+        if t["tg_id"]:
+            stmts.insert(0, ("DELETE FROM fsm WHERE key LIKE ?", f"%:{t['tg_id']}:{t['tg_id']}:%"))
+        await db.run_many(stmts)
         name = t["nick"] or t["username"]
         await db.audit(u["id"], f"Удалил {ROLES[t['role']]} {name} [приложение]")
         _bg(notify_admins(self.bot, db, f"🗑 {user_name(u)} удалил {esc(name)}", exclude_user_id=u["id"]))
@@ -826,17 +879,18 @@ class Api:
                            "FROM payments p WHERE p.status='confirmed' AND p.reviewed_at>=? AND p.reviewed_at<?" + mine,
                            start, end, *mp)
         # график: по дням (до 62 дней) или по месяцам
-        first = await db.one("SELECT MIN(reviewed_at) t FROM payments WHERE status='confirmed'")
+        first = await db.one("SELECT MIN(p.reviewed_at) t FROM payments p WHERE p.status='confirmed'" + mine, *mp)
         s_eff = max(start, (first["t"] or end) - 86400) if kind == "all" else start
-        days = max(1, (end - s_eff + 86399) // 86400)
-        rows = await db.all("SELECT p.amount, p.worker_share, p.reviewed_at FROM payments p WHERE p.status='confirmed' "
-                            "AND p.reviewed_at>=? AND p.reviewed_at<?" + mine, s_eff, end, *mp)
         from datetime import datetime
+        d_first = datetime.fromtimestamp(s_eff, TZ).date()
+        d_last = datetime.fromtimestamp(max(s_eff, end - 1), TZ).date()
+        days = (d_last - d_first).days + 1  # по календарным дням (переход на летнее время не ломает подсчёт)
+        rows = await db.all("SELECT p.amount, p.worker_share, p.reviewed_at FROM payments p WHERE p.status='confirmed' "
+                            "AND p.reviewed_at>=? AND p.reviewed_at<?" + mine + " ORDER BY p.reviewed_at", s_eff, end, *mp)
         buckets: dict[str, list[int]] = {}
         if days <= 62:
-            d0 = datetime.fromtimestamp(s_eff, TZ).date()
             for i in range(days):
-                d = d0 + timedelta(days=i)
+                d = d_first + timedelta(days=i)
                 buckets[d.strftime("%d.%m")] = [0, 0]
             fmt = "%d.%m"
         else:

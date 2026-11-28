@@ -171,7 +171,7 @@ async def on_error(event: ErrorEvent):
         if upd.callback_query:
             await upd.callback_query.answer("⚠️ Ошибка, попробуйте ещё раз", show_alert=True)
         elif upd.message:
-            await upd.message.answer("⚠️ Ошибка. Попробуйте ещё раз или нажмите /menu")
+            await ui.show(upd.message, "⚠️ Ошибка. Попробуйте ещё раз или нажмите /menu")
     except Exception:
         pass
     return True

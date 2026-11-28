@@ -1,4 +1,5 @@
 from aiogram import Router
+from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from ..db import DB
@@ -8,8 +9,12 @@ router = Router(name="fallback")
 
 
 @router.message()
-async def unknown_message(message: Message, db: DB, user):
-    await to_menu(message, db, user, "Не понял 🤔 Выберите действие:")
+async def unknown_message(message: Message, state: FSMContext, db: DB, user):
+    # сюда попадает и неподходящий ввод в форме (фото вместо текста и т.п.) — форму сбрасываем,
+    # чтобы следующий текст не записался в неё «вслепую»
+    had_form = await state.get_state()
+    await state.clear()
+    await to_menu(message, db, user, "Действие отменено." if had_form else "Не понял 🤔 Выберите действие:")
 
 
 @router.callback_query()

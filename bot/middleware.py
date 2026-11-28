@@ -12,6 +12,8 @@ from .notify import notify_admins
 from .utils import ROLES, esc
 
 PENDING_TTL = 14 * 24 * 3600  # приглашение по username действует 14 дней
+# кнопки, которые являются частью форм (их нажатие не сбрасывает форму)
+FORM_CALLBACKS = ("nc:", "pay:rq:", "st:pv:", "rq:skip", "rq:cclear", "hide", "noop")
 
 
 class NickForm(StatesGroup):
@@ -87,6 +89,8 @@ class AccessMiddleware(BaseMiddleware):
         db: DB = data["db"]
         user = await resolve_user(db, tg_user, data["bot"])
         if user is None:
+            if isinstance(event, CallbackQuery):
+                await event.answer()  # просто убрать «часики», без текста
             return None
         data["user"] = user
 
@@ -110,6 +114,11 @@ class AccessMiddleware(BaseMiddleware):
         # Кнопка главного меню всегда прерывает текущий диалог (иначе её текст
         # попадёт в форму как ввод). Фильтры состояния читают raw_state.
         if isinstance(event, Message) and event.text in MENU_BUTTONS and data.get("raw_state"):
+            await state.clear()
+            data["raw_state"] = None
+        # Нажатие кнопки, не относящейся к текущей форме, тоже её прерывает
+        if (isinstance(event, CallbackQuery) and data.get("raw_state")
+                and not (event.data or "").startswith(FORM_CALLBACKS)):
             await state.clear()
             data["raw_state"] = None
 

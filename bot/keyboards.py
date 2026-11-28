@@ -18,7 +18,8 @@ BTN_LOG = "📜 Журнал"
 BTN_MY_STATS = "📊 Моя статистика"
 
 MENU_BUTTONS = frozenset({BTN_CLIENTS, BTN_NEW_CLIENT, BTN_RECEIPTS, BTN_REQS,
-                          BTN_REPORTS, BTN_STAFF, BTN_LOG, BTN_MY_STATS})
+                          BTN_REPORTS, BTN_STAFF, BTN_LOG, BTN_MY_STATS,
+                          "👤 Сотрудники"})  # старая подпись из прежней нижней клавиатуры
 
 # Цвета кнопок Telegram: зелёный — подтвердить/добавить, красный — удалить/отклонить,
 # синий — главное действие экрана. Остальные (навигация) — обычные.
