@@ -156,6 +156,7 @@ class Api:
         r.add_post("/api/team/{id:\\d+}/approve", self.team_approve)
         r.add_delete("/api/team/{id:\\d+}", self.team_delete)
         r.add_get("/api/reports", self.reports)
+        r.add_get("/api/audit", self.audit)
         if self.static_dir:  # приложение можно открыть и прямо через туннель (если GitHub Pages не включён)
             r.add_get("/app", lambda req: web.HTTPFound("/app/"))
             r.add_get("/app/", lambda req: web.FileResponse(f"{self.static_dir}/index.html"))
@@ -301,6 +302,16 @@ class Api:
         u, db = request["user"], self.db
         c = await self.client_for(u, int(request.match_info["id"]))
         data = await self.body(request)
+        if "name" in data or "phone" in data:
+            name = " ".join(str(data.get("name", c["name"])).split())
+            phone = " ".join(str(data.get("phone", c["phone"] or "")).split())
+            if not 1 <= len(name) <= 100:
+                bad("Укажите имя (до 100 символов)")
+            if not re.fullmatch(r"\+?[\d\s\-()]{7,25}", phone) or len(re.sub(r"\D", "", phone)) < 7:
+                bad("Проверьте телефон")
+            if (name, phone) != (c["name"], c["phone"]):
+                await db.run("UPDATE clients SET name=?, phone=? WHERE id=?", name, phone, c["id"])
+                await db.audit(u["id"], f"Клиент #{c['id']}: изменены данные [приложение]")
         if "status" in data:
             st = data["status"]
             if st not in CLIENT_STATUSES:
@@ -726,6 +737,15 @@ class Api:
         await db.run("DELETE FROM users WHERE id=?", t["id"])
         await db.audit(u["id"], f"Удалил {t['role']} {t['nick'] or t['username']} [приложение]")
         return web.json_response({"ok": True})
+
+    # ---------- журнал ----------
+
+    async def audit(self, request):
+        u, db = request["user"], self.db
+        need_admin(u)
+        rows = await db.all("SELECT a.text, a.created_at, u.nick FROM audit a LEFT JOIN users u ON u.id=a.user_id "
+                            "ORDER BY a.id DESC LIMIT 150")
+        return web.json_response({"items": [{"text": r["text"], "at": r["created_at"], "who": r["nick"]} for r in rows]})
 
     # ---------- отчёты ----------
 
