@@ -19,6 +19,8 @@ jobs:
     # бот в это время отдаёт приложение через свой туннель
     continue-on-error: true
     permissions:
+      contents: read
+      actions: read     # deploy-pages читает собранный артефакт
       pages: write
       id-token: write
     environment:
