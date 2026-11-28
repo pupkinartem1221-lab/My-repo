@@ -925,7 +925,7 @@ function Reports() {
           barChart(d.series.map((s) => ({ label: s.label, value: ME.admin ? s.amount : s.share })))) : null,
         ME.admin && d.workers && d.workers.length ? h("div", null, h("div", { class: "subtitle" }, "Сотрудники"),
           breakdown(d.workers.map((w) => ({ name: w.name, value: w.amount, sub: `${plural(w.count, "оплата", "оплаты", "оплат")} · заработок ${money(w.share)}` })))) : null,
-        ME.admin && d.requisites && d.requisites.length ? h("div", null, h("div", { class: "subtitle" }, "Реквизиты"),
+        ME.admin && d.requisites && d.requisites.length ? h("div", null, h("div", { class: "subtitle" }, "Поступления по реквизитам"),
           breakdown(d.requisites.map((r) => ({ name: r.name, value: r.amount, sub: plural(r.count, "оплата", "оплаты", "оплат") })))) : null,
         !d.count ? emptyState("📭", "За этот период оплат нет") : null].filter(Boolean));
       setTimeout(() => countUp(big, ME.admin ? d.total : d.share), 100);

@@ -25,7 +25,7 @@ from .notify import notify_admins, notify_all, notify_user, send_safe, with_hide
 from .keyboards import btn, danger_btn, kb, main_btn, ok_btn
 from .reports import PERIODS, period
 from .rules import RECEIPT_REQUIRED, has_receipt, revert_paid_if_no_receipt
-from .utils import (CLIENT_STATUSES, TZ, day_range, esc, fmt_money, iban_ok, ipn_checksum_ok, is_admin,
+from .utils import (CLIENT_STATUSES, TZ, day_range, deleted_req_label, esc, fmt_money, iban_ok, ipn_checksum_ok, is_admin,
                     like_escape, now, parse_money, today, user_name)
 
 log = logging.getLogger(__name__)
@@ -790,7 +790,7 @@ class Api:
                 "SELECT u.nick, u.username, COUNT(*) n, SUM(p.amount) s, COALESCE(SUM(p.worker_share),0) sh "
                 "FROM payments p LEFT JOIN users u ON u.id=p.worker_id WHERE p.status='confirmed' "
                 "AND p.reviewed_at>=? AND p.reviewed_at<? GROUP BY p.worker_id ORDER BY s DESC", start, end)]
-            result["requisites"] = [dict(name=(f"…{r['iban'][-6:]} {r['holder']}" if r["iban"] else (r["label"] or "без реквизита")),
+            result["requisites"] = [dict(name=(f"…{r['iban'][-6:]} {r['holder']}" if r["iban"] else deleted_req_label(r["label"])),
                                          amount=r["s"], count=r["n"]) for r in await db.all(
                 "SELECT r.iban, r.holder, p.requisite_label label, COUNT(*) n, SUM(p.amount) s FROM payments p "
                 "LEFT JOIN requisites r ON r.id=p.requisite_id WHERE p.status='confirmed' AND p.reviewed_at>=? "

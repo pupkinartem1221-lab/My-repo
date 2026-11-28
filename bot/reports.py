@@ -1,7 +1,7 @@
 from datetime import date, timedelta
 
 from .db import DB
-from .utils import day_range, esc, fit, fmt_money, today
+from .utils import day_range, deleted_req_label, esc, fit, fmt_money, today
 
 PERIODS = {
     "today": "Сегодня",
@@ -70,14 +70,12 @@ async def admin_report(db: DB, start: int, end: int, title: str) -> str:
             name = esc(r["nick"] or r["username"] or (f"id{r['wid']}" if r["wid"] else "удалён"))
             lines.append(f"• {name}: {fmt_money(r['s'])} → 💵 {fmt_money(r['sh'])}")
     if by_req:
-        lines.append("\n<b>Реквизиты</b>")
+        lines.append("\n<b>Поступления по реквизитам</b>")
         for r in by_req:
             if r["id"]:
                 name = f"…{esc(r['iban'][-6:])} {esc(r['holder'])}"
-            elif r["label"]:
-                name = f"{esc(r['label'])} (удалён)"
             else:
-                name = "без реквизита"
+                name = esc(deleted_req_label(r["label"]))
             lines.append(f"• {name}: {fmt_money(r['s'])}")
     if not tot["n"]:
         lines.append("\n<i>Подтверждённых оплат за период нет.</i>")
