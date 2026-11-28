@@ -1,4 +1,5 @@
 from aiogram.types import (
+    WebAppInfo,
     CopyTextButton,
     DisabledButton,
     InlineKeyboardButton,
@@ -80,21 +81,34 @@ def confirm_kb(yes_data: str, no_data: str, yes_text: str = "🗑 Да, удал
     return kb([danger_btn(yes_text, yes_data), btn("Отмена", no_data)])
 
 
+# Адрес мини-приложения (с параметром api=…); задаётся, когда туннель готов.
+APP_URL: str | None = None
+
+
+def app_btn(text: str = "📱 Открыть приложение") -> InlineKeyboardButton | None:
+    if not APP_URL:
+        return None
+    return InlineKeyboardButton(text=text, web_app=WebAppInfo(url=APP_URL), style=BLUE)
+
+
 def home_btn() -> InlineKeyboardButton:
     return btn("🏠 Меню", "m:home")
 
 
 def menu_kb(user, pending: int = 0) -> InlineKeyboardMarkup:
     """Главное меню inline-кнопками. Счётчик квитанций подсвечивается, когда есть что проверять."""
+    app = app_btn()
     if is_admin(user):
         receipts = f"🧾 Квитанции · {pending}" if pending else "🧾 Квитанции"
         return kb(
+            [app] if app else [],
             [btn("👥 Клиенты", "m:clients"), ok_btn("➕ Новый клиент", "m:new")],
             [btn(receipts, "m:receipts", BLUE if pending else None), btn("💳 Реквизиты", "m:reqs")],
             [btn("📊 Отчёты", "m:reports"), btn("👤 Сотрудники", "m:staff")],
             [btn("📜 Журнал", "m:log")],
         )
     return kb(
+        [app] if app else [],
         [btn("👥 Мои клиенты", "m:clients"), ok_btn("➕ Новый клиент", "m:new")],
         [btn("💳 Реквизиты", "m:reqs"), btn("📊 Моя статистика", "m:stats")],
     )

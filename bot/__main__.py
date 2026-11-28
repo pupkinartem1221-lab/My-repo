@@ -8,15 +8,20 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import SimpleEventIsolation
-from aiogram.types import BotCommand, ErrorEvent, MenuButtonCommands
+import json
+from urllib.parse import quote, urlsplit
 
-from . import scheduler, ui
+from aiogram.types import BotCommand, ErrorEvent, MenuButtonCommands, MenuButtonWebApp, WebAppInfo
+
+from . import keyboards, scheduler, ui
 from .config import load_config
 from .db import DB
 from .fsm_storage import SQLiteStorage
 from .handlers import clients, common, fallback, payments, reports, requisites, staff
 from .middleware import AccessMiddleware
 from .storage_sync import DataSync, LeaseLost
+from .tunnel import Tunnel
+from .webapi import start_server
 from .utils import TZ, now
 
 log = logging.getLogger("crm")
@@ -115,6 +120,17 @@ async def main() -> None:
             raise SystemExit("Финальное сохранение не удалось")
 
 
+async def pages_available(url: str) -> bool:
+    """Опубликовано ли приложение на GitHub Pages (иначе отдаём его через туннель)."""
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
+            async with s.get(url + "app.js") as r:
+                return r.status == 200
+    except Exception:
+        return False
+
+
 def planned_stop_delay(run_seconds: int) -> float:
     """Не останавливаться в 23:40–00:05: в полночь должен работать бот, а не перезапуск."""
     stop_at = datetime.now(TZ) + timedelta(seconds=run_seconds)
@@ -174,7 +190,8 @@ async def run_bot(cfg, db: DB, persister: Persister) -> None:
         # кнопка «Меню» слева от поля ввода в Telegram
         await bot.set_my_commands([BotCommand(command="menu", description="🏠 Главное меню"),
                                    BotCommand(command="cancel", description="✖️ Отменить действие")])
-        await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+        if not cfg.cloudflared:
+            await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
     except Exception as e:
         log.warning("Не удалось установить меню команд: %s", type(e).__name__)
 
@@ -185,9 +202,28 @@ async def run_bot(cfg, db: DB, persister: Persister) -> None:
         if text:
             await dp.stop_polling()
 
+    # --- мини-приложение: API + туннель ---
+    runner = tunnel = None
+    if cfg.cloudflared:
+        static_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "webapp")
+        origin = "{0.scheme}://{0.netloc}".format(urlsplit(cfg.pages_url)) if cfg.pages_url else None
+        runner = await start_server(db, bot, cfg.token, origin, cfg.api_port, static_dir)
+
+        async def on_url(api_url: str):
+            base = cfg.pages_url if cfg.pages_url and await pages_available(cfg.pages_url) else f"{api_url}/app/"
+            keyboards.APP_URL = f"{base}?api={quote(api_url, safe='')}"
+            await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(
+                text="📱 CRM", web_app=WebAppInfo(url=keyboards.APP_URL)))
+            persister.sync.extra_files["api.json"] = json.dumps({"api": api_url, "at": now()})
+            db.dirty = True  # сохранить api.json при ближайшем сохранении
+            log.info("Приложение доступно (%s)", "GitHub Pages" if base == cfg.pages_url else "через туннель")
+        tunnel = Tunnel(cfg.cloudflared, cfg.api_port, on_url)
+
     stop = asyncio.Event()
     persist_task = asyncio.create_task(persister.loop(cfg.save_interval, stop, alert_owner))
     other_tasks = [asyncio.create_task(scheduler.daily_loop(bot, db))]
+    if tunnel:
+        other_tasks.append(asyncio.create_task(tunnel.run()))
     if cfg.run_seconds > 0:
         async def stop_later():
             await asyncio.sleep(planned_stop_delay(cfg.run_seconds))
@@ -215,6 +251,10 @@ async def run_bot(cfg, db: DB, persister: Persister) -> None:
         stop.set()
         for t in other_tasks:
             t.cancel()
+        if tunnel:
+            await tunnel.stop()
+        if runner:
+            await runner.cleanup()
         await asyncio.gather(persist_task, *other_tasks, return_exceptions=True)
         await bot.session.close()
 

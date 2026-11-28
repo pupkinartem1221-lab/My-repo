@@ -15,6 +15,9 @@ class Config:
     init_db: bool
     run_seconds: int
     save_interval: int
+    pages_url: str | None
+    cloudflared: str | None
+    api_port: int
 
 
 def _int(name: str, default: int, minimum: int) -> int:
@@ -49,7 +52,12 @@ def load_config() -> Config:
         init_db=os.environ.get("INIT_DB", "").strip().lower() in ("1", "true", "yes"),
         run_seconds=_int("RUN_SECONDS", 0, 0),
         save_interval=_int("SAVE_INTERVAL", 60, 10),
+        pages_url=(os.environ.get("PAGES_URL") or "").strip() or None,
+        cloudflared=(os.environ.get("CLOUDFLARED") or "").strip() or None,
+        api_port=_int("API_PORT", 8080, 1024),
     )
+    if cfg.pages_url and not cfg.pages_url.startswith("https://"):
+        raise SystemExit("PAGES_URL должен начинаться с https://")
     if cfg.data_repo:
         if not cfg.gh_token:
             raise SystemExit("DATA_REPO задан, но нет GITHUB_TOKEN — данные не сохранятся")
