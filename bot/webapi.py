@@ -24,7 +24,7 @@ from .middleware import PENDING_TTL
 from .notify import notify_admins, notify_all, notify_user, send_safe, with_hide
 from .keyboards import btn, danger_btn, kb, main_btn, ok_btn
 from .reports import PERIODS, period
-from .rules import RECEIPT_REQUIRED, has_receipt, revert_paid_if_no_receipt
+from .rules import RECEIPT_REQUIRED, has_receipt, revert_paid_if_no_receipt, set_percent, worker_total
 from .utils import (CLIENT_STATUSES, TZ, day_range, deleted_req_label, esc, fmt_money, iban_ok, ipn_checksum_ok, is_admin,
                     like_escape, now, parse_money, today, user_name)
 
@@ -701,10 +701,14 @@ class Api:
                 value = -1
             if not 0 <= value <= 100:
                 bad("Процент от 0 до 100")
-            await db.run("UPDATE users SET percent=? WHERE id=?", value, t["id"])
-            await db.audit(u["id"], f"Процент {t['nick'] or t['username']}: {t['percent']:g}% → {value:g}% [приложение]")
+            n = await set_percent(db, t["id"], value)
+            total = await worker_total(db, t["id"])
+            await db.audit(u["id"], f"Процент {t['nick'] or t['username']}: {t['percent']:g}% → {value:g}% "
+                                    f"(пересчитано оплат: {n}) [приложение]")
             if t["id"] != u["id"] and t["tg_id"]:
-                _bg(send_safe(self.bot, t["tg_id"], f"💯 Ваш процент теперь <b>{value:g}%</b>"))
+                _bg(send_safe(self.bot, t["tg_id"], f"💯 Ваш процент теперь <b>{value:g}%</b>\n"
+                                                    f"Заработок пересчитан: <b>{fmt_money(total)}</b>"))
+            return web.json_response({"ok": True, "recalculated": n, "total": total})
         return web.json_response({"ok": True})
 
     async def team_approve(self, request):
