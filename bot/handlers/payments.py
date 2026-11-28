@@ -10,7 +10,7 @@ from ..db import DB
 from ..keyboards import (BTN_RECEIPTS, back_btn, btn, confirm_kb, danger_btn, home_btn, kb, main_btn, ok_btn)
 from ..notify import HIDE, notify_admins, notify_user, send_file_safe
 from ..ui import extra_file, show
-from ..utils import (PAYMENT_STATUSES, clip, esc, fit, fmt_money, fmt_short, is_admin, now, parse_money,
+from ..utils import (PAYMENT_STATUSES, clip, deleted_req_label, esc, fit, fmt_money, fmt_short, is_admin, now, parse_money,
                      user_name)
 from ..rules import revert_paid_if_no_receipt
 from .clients import get_client_for, open_card
@@ -40,7 +40,7 @@ async def payment_caption(db: DB, p, viewer) -> str:
     if req and (admin or req["is_active"]):
         where = f"💳 …{esc(req['iban'][-6:])} {esc(clip(req['holder'], 30))}"
     elif p["requisite_label"] and admin:
-        where = f"💳 {esc(clip(p['requisite_label'], 50))} (удалён)"
+        where = f"💳 {esc(deleted_req_label(p['requisite_label']))}"
     else:
         where = "💳 —"
     lines = [

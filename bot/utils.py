@@ -117,6 +117,17 @@ def messenger_links(phone: str | None) -> dict[str, str]:
     }
 
 
+def deleted_req_label(label: str | None) -> str:
+    """«UA…IBAN (ФИО)» из снимка в оплате → «…123456 ФИО (удалён)»."""
+    if not label:
+        return "без реквизита"
+    m = re.match(r"\s*([A-Z]{2}\d{2}[A-Z0-9]+)\s*(?:\((.*)\))?\s*$", label)
+    if not m:
+        return f"{label} (удалён)"
+    holder = f" {m.group(2)}" if m.group(2) else ""
+    return f"…{m.group(1)[-6:]}{holder} (удалён)"
+
+
 def like_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
