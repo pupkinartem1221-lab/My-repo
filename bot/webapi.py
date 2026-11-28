@@ -185,30 +185,36 @@ class Api:
 
     async def dashboard(self, request):
         u, db = request["user"], self.db
-        s, e = day_range(today())
-        if is_admin(u):
-            paid = await db.one("SELECT COUNT(*) n, COALESCE(SUM(amount),0) s, COALESCE(SUM(worker_share),0) sh "
-                                "FROM payments WHERE status='confirmed' AND reviewed_at>=? AND reviewed_at<?", s, e)
-            pend = await db.one("SELECT COUNT(*) n, COALESCE(SUM(amount),0) s FROM payments WHERE status='pending'")
-            clients = await db.one("SELECT COUNT(*) n, SUM(status='work') w FROM clients")
-            waiting = await db.one("SELECT COUNT(*) n FROM users WHERE tg_id IS NOT NULL AND approved=0")
-            return web.json_response({
-                "today": {"amount": paid["s"], "count": paid["n"], "share": paid["sh"], "rest": paid["s"] - paid["sh"]},
-                "pending": {"count": pend["n"], "amount": pend["s"]},
-                "clients": {"total": clients["n"], "work": clients["w"] or 0},
-                "waiting_access": waiting["n"],
-            })
-        mine = await db.one("SELECT COUNT(*) n, COALESCE(SUM(amount),0) s, COALESCE(SUM(worker_share),0) sh "
-                            "FROM payments WHERE worker_id=? AND status='confirmed' AND reviewed_at>=? AND reviewed_at<?",
-                            u["id"], s, e)
-        pend = await db.one("SELECT COUNT(*) n, COALESCE(SUM(amount),0) s FROM payments "
-                            "WHERE worker_id=? AND status='pending'", u["id"])
-        clients = await db.one("SELECT COUNT(*) n, SUM(status='work') w FROM clients WHERE worker_id=?", u["id"])
-        return web.json_response({
-            "today": {"amount": mine["s"], "count": mine["n"], "share": mine["sh"]},
+        admin = is_admin(u)
+        scope, sp = ("", []) if admin else (" AND worker_id=?", [u["id"]])
+        t = today()
+        week = []
+        for i in range(6, -1, -1):
+            d = t - timedelta(days=i)
+            s, e = day_range(d)
+            row = await db.one(f"SELECT COUNT(*) n, COALESCE(SUM(amount),0) a, COALESCE(SUM(worker_share),0) sh "
+                               f"FROM payments WHERE status='confirmed' AND reviewed_at>=? AND reviewed_at<?{scope}",
+                               s, e, *sp)
+            week.append({"label": d.strftime("%d.%m"), "amount": row["a"], "share": row["sh"], "count": row["n"]})
+        pend = await db.one(f"SELECT COUNT(*) n, COALESCE(SUM(amount),0) s FROM payments WHERE status='pending'{scope}", *sp)
+        cscope, cp = ("", []) if admin else (" WHERE worker_id=?", [u["id"]])
+        clients = await db.one(f"SELECT COUNT(*) n, SUM(status='work') w, "
+                               f"SUM(status='work' AND requisite_id IS NULL) noreq FROM clients{cscope}", *cp)
+        recent = await db.all(
+            f"SELECT p.id, p.client_id, p.client_name, p.amount, p.worker_share, p.reviewed_at, w.nick wnick "
+            f"FROM payments p LEFT JOIN users w ON w.id=p.worker_id WHERE p.status='confirmed'"
+            f"{'' if admin else ' AND p.worker_id=?'} ORDER BY p.reviewed_at DESC LIMIT 5", *sp)
+        result = {
+            "today": week[-1], "yesterday": week[-2], "week": week,
             "pending": {"count": pend["n"], "amount": pend["s"]},
-            "clients": {"total": clients["n"], "work": clients["w"] or 0},
-        })
+            "clients": {"total": clients["n"], "work": clients["w"] or 0, "no_requisite": clients["noreq"] or 0},
+            "recent": [{"id": r["id"], "client_id": r["client_id"], "client_name": r["client_name"], "amount": r["amount"],
+                        "share": r["worker_share"], "at": r["reviewed_at"], "worker": r["wnick"]} for r in recent],
+        }
+        if admin:
+            result["waiting_access"] = (await db.one(
+                "SELECT COUNT(*) n FROM users WHERE tg_id IS NOT NULL AND approved=0"))["n"]
+        return web.json_response(result)
 
     # ---------- клиенты ----------
 
