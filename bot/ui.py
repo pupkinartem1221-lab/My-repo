@@ -61,7 +61,10 @@ async def show(event: Message | CallbackQuery, text: str,
 
     if isinstance(event, CallbackQuery):
         msg = event.message
-        if isinstance(msg, Message) and msg.text is not None and msg.message_id not in aux:
+        rm = getattr(msg, "reply_markup", None)
+        # уведомление (с кнопкой «Скрыть») не превращаем в экран — оно остаётся, экран приходит ниже
+        notice = bool(rm) and any(b.callback_data == "hide" for r in rm.inline_keyboard for b in r)
+        if isinstance(msg, Message) and msg.text is not None and msg.message_id not in aux and not notice:
             try:
                 await msg.edit_text(text, reply_markup=reply_markup)
                 ok = True
@@ -90,8 +93,12 @@ async def _add_aux(chat_id: int, message_id: int) -> None:
 
 
 async def extra_file(bot: Bot, chat_id: int, file_id: str, file_type: str, caption: str,
-                     reply_markup: InlineKeyboardMarkup | None = None) -> None:
+                     reply_markup: InlineKeyboardMarkup | None = None, replace: bool = False) -> None:
     """Временное фото/файл под экраном — исчезнет при следующей смене экрана."""
+    if replace:
+        screen_id, aux = await _get(chat_id)
+        await _delete(bot, chat_id, aux)
+        await _set(chat_id, screen_id, [])
     try:
         if file_type == "photo":
             sent = await bot.send_photo(chat_id, file_id, caption=caption, reply_markup=reply_markup)
@@ -104,3 +111,10 @@ async def extra_file(bot: Bot, chat_id: int, file_id: str, file_type: str, capti
 
 async def forget(chat_id: int) -> None:
     await _db.run("DELETE FROM ui WHERE tg_id=?", chat_id)
+
+
+async def clear_chat(bot: Bot, chat_id: int) -> None:
+    """Убрать экран и временные сообщения пользователя (при удалении/отказе в доступе)."""
+    screen_id, aux = await _get(chat_id)
+    await _delete(bot, chat_id, aux + ([screen_id] if screen_id else []))
+    await forget(chat_id)

@@ -100,6 +100,17 @@ MIGRATIONS = [
     "CREATE TABLE IF NOT EXISTS daily_sent (day TEXT NOT NULL, tg_id INTEGER NOT NULL, PRIMARY KEY (day, tg_id));",
     # 5: «одно окно» — какое сообщение бота сейчас экран пользователя и какие временные сообщения убрать
     "CREATE TABLE IF NOT EXISTS ui (tg_id INTEGER PRIMARY KEY, screen_id INTEGER, aux TEXT NOT NULL DEFAULT '[]');",
+    # 6: заработок по текущим процентам (правило: смена процента пересчитывает всё), точное округление,
+    #    «Оплачено» только с квитанцией, индексы
+    "UPDATE payments SET worker_percent=(SELECT percent FROM users u WHERE u.id=payments.worker_id) "
+    "WHERE status='confirmed' AND worker_id IS NOT NULL;"
+    "UPDATE payments SET worker_share=(amount * CAST(ROUND(COALESCE(worker_percent, 0) * 100) AS INTEGER) + 5000) / 10000 WHERE status='confirmed';"
+    "UPDATE clients SET status='work' WHERE status='paid' AND NOT EXISTS "
+    "(SELECT 1 FROM payments p WHERE p.client_id=clients.id AND p.status IN ('pending','confirmed'));"
+    "CREATE INDEX IF NOT EXISTS idx_audit_user ON audit(user_id);"
+    "CREATE INDEX IF NOT EXISTS idx_pay_sub ON payments(submitted_by);"
+    "CREATE INDEX IF NOT EXISTS idx_pay_rev ON payments(reviewed_by);"
+    "CREATE INDEX IF NOT EXISTS idx_clients_created ON clients(created_at);",
 ]
 
 
@@ -128,6 +139,8 @@ class DB:
             await self.conn.executescript(SCHEMA)
             async with self.conn.execute("PRAGMA user_version") as cur:
                 version = (await cur.fetchone())[0]
+            # Миграции — с выключенными внешними ключами: пересоздание таблиц не должно обнулять связи.
+            await self.conn.execute("PRAGMA foreign_keys = OFF")
             for i, script in enumerate(MIGRATIONS[version:], start=version + 1):
                 try:
                     await self.conn.executescript(
@@ -137,6 +150,13 @@ class DB:
                         await self.conn.execute("ROLLBACK")
                     raise
                 self.dirty = True
+            async with self.conn.execute("PRAGMA foreign_key_check") as cur:
+                if await cur.fetchone():
+                    raise SystemExit("Нарушены связи в базе после миграции")
+            await self.conn.execute("PRAGMA foreign_keys = ON")
+            # уборка «осиротевших» служебных строк
+            await self.conn.execute("DELETE FROM ui WHERE tg_id NOT IN (SELECT tg_id FROM users WHERE tg_id IS NOT NULL)")
+            await self.conn.execute("DELETE FROM fsm WHERE state IS NULL AND (data IS NULL OR data='{}')")
             async with self.conn.execute("PRAGMA quick_check") as cur:
                 if (await cur.fetchone())[0] != "ok":
                     raise SystemExit("База данных повреждена (quick_check)")
@@ -167,18 +187,21 @@ class DB:
         self.dirty = True
         return cur
 
-    async def run_many(self, statements: list[tuple]) -> None:
-        """Несколько изменений одной транзакцией: либо все, либо ничего."""
+    async def run_many(self, statements: list[tuple]) -> list[aiosqlite.Cursor]:
+        """Несколько изменений одной транзакцией: либо все, либо ничего. Возвращает курсоры (rowcount/lastrowid).
+        Внутри нельзя вызывать другие методы DB — замок не реентерабельный."""
         async with self.lock:
             await self.conn.execute("BEGIN")
             try:
+                curs = []
                 for sql, *params in statements:
-                    await self.conn.execute(sql, params)
+                    curs.append(await self.conn.execute(sql, params))
                 await self.conn.execute("COMMIT")
             except BaseException:
                 await self.conn.execute("ROLLBACK")
                 raise
         self.dirty = True
+        return curs
 
     async def snapshot(self, dest: str) -> None:
         async with self.lock:

@@ -144,7 +144,7 @@ def like_escape(value: str) -> str:
 
 
 def iban_ok(iban: str) -> bool:
-    if not re.fullmatch(r"[A-Z]{2}\d{2}[A-Z0-9]{11,30}", iban):
+    if not re.fullmatch(r"[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}", iban, re.ASCII):
         return False
     if iban.startswith("UA") and len(iban) != 29:
         return False

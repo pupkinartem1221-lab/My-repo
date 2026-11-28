@@ -8,9 +8,9 @@ from aiogram.types import CallbackQuery, Message
 from ..db import DB
 from ..keyboards import BTN_STAFF, back_btn, btn, cancel_kb, confirm_kb, danger_btn, home_btn, kb, ok_btn, url_btn
 from ..middleware import PENDING_TTL
-from ..notify import notify_admins, send_safe
-from ..ui import forget, show
-from ..rules import set_percent, worker_total
+from ..notify import notify_admins, notify_user, send_safe
+from ..ui import clear_chat, show
+from ..rules import blocks_delete, set_percent, worker_total
 from ..utils import ROLES, clip, esc, fmt_money, fmt_short, is_admin, now, pays, user_name
 
 router = Router(name="staff")
@@ -88,7 +88,7 @@ async def open_list(event, db: DB, user):
     await show(event, text, markup)
 
 
-@router.message(F.text == BTN_STAFF)
+@router.message(F.text.in_({BTN_STAFF, "👤 Сотрудники"}))
 async def staff_menu(message: Message, state: FSMContext, db: DB, user):
     await state.clear()
     if is_admin(user):
@@ -179,7 +179,7 @@ async def approve(cb: CallbackQuery, db: DB, user, bot: Bot):
     else:
         await db.run("DELETE FROM users WHERE id=? AND approved=0", u["id"])
         await db.run("DELETE FROM fsm WHERE key LIKE ?", f"%:{u['tg_id']}:{u['tg_id']}:%")
-        await forget(u["tg_id"])
+        await clear_chat(bot, u["tg_id"])
         await db.audit(user["id"], f"Отклонил доступ {name} (Telegram ID {u['tg_id']})")
         await cb.answer("❌ Отклонено")
         await open_list(cb, db, user)
@@ -260,7 +260,7 @@ async def save_percent(event, state: FSMContext, db: DB, user, bot: Bot, value: 
                                f"(пересчитано оплат: {n})")
     await open_card(event, db, user, uid, f"✅ Процент: {value:g}%\nЗаработок пересчитан: {fmt_money(total)} ({pays(n)})")
     if uid != user["id"] and u["tg_id"]:
-        await send_safe(bot, u["tg_id"], f"💯 Ваш процент теперь <b>{value:g}%</b>\n"
+        await notify_user(bot, db, uid, f"💯 Ваш процент теперь <b>{value:g}%</b>\n"
                                          f"Заработок пересчитан: <b>{fmt_money(total)}</b>")
     await notify_admins(bot, db, f"💯 {user_name(user)}: процент {user_name(u)} {u['percent']:g}% → {value:g}%",
                         exclude_user_id=user["id"])
@@ -304,10 +304,15 @@ async def staff_delete(cb: CallbackQuery, db: DB, user, bot: Bot):
     u = await db.get_user(uid)
     if u is None or not can_manage(user, u):
         return await cb.answer("Нет доступа", show_alert=True)
+    reason = await blocks_delete(db, uid)
+    if reason:
+        return await cb.answer(reason, show_alert=True)
     if u["tg_id"]:
-        await db.run("DELETE FROM fsm WHERE key LIKE ?", f"%:{u['tg_id']}:{u['tg_id']}:%")
-        await forget(u["tg_id"])
-    await db.run("DELETE FROM users WHERE id=?", uid)
+        await clear_chat(bot, u["tg_id"])
+    stmts = [("DELETE FROM users WHERE id=?", uid)]
+    if u["tg_id"]:
+        stmts.insert(0, ("DELETE FROM fsm WHERE key LIKE ?", f"%:{u['tg_id']}:{u['tg_id']}:%"))
+    await db.run_many(stmts)
     name = u["nick"] or u["username"]
     await db.audit(user["id"], f"Удалил {ROLES[u['role']]} {name}")
     await cb.answer("Удалено")
