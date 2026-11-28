@@ -128,12 +128,20 @@ async function refreshApiUrl() {
   const owner = location.hostname.split(".")[0];
   const repo = location.pathname.split("/").filter(Boolean)[0];
   if (!location.hostname.endsWith("github.io") || !repo) return false;
-  try {
-    const r = await fetch(`https://raw.githubusercontent.com/${owner}/${repo}/bot-data/api.json?t=${Date.now()}`, { cache: "no-store" });
-    if (!r.ok) return false;
-    const j = await r.json();
-    if (j.api && j.api !== API) { API = j.api; try { localStorage.setItem("crm_api", API); } catch (_) {} return true; }
-  } catch (_) {}
+  // 1) API GitHub — без кэша; 2) raw-файл — запасной вариант (кэшируется до 5 минут)
+  const sources = [
+    [`https://api.github.com/repos/${owner}/${repo}/contents/api.json?ref=bot-data&t=${Date.now()}`, { headers: { Accept: "application/vnd.github.raw+json" }, cache: "no-store" }],
+    [`https://raw.githubusercontent.com/${owner}/${repo}/bot-data/api.json?t=${Date.now()}`, { cache: "no-store" }],
+  ];
+  for (const [url, opts] of sources) {
+    try {
+      const r = await fetch(url, opts);
+      if (!r.ok) continue;
+      const j = await r.json();
+      if (j.api && j.api !== API) { API = j.api; try { localStorage.setItem("crm_api", API); } catch (_) {} return true; }
+      if (j.api) return false;
+    } catch (_) {}
+  }
   return false;
 }
 async function api(path, { method = "GET", body, form } = {}, retried = false) {
