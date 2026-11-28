@@ -121,24 +121,36 @@ const reqText = (r) => `IBAN: ${r.iban}\nОтримувач: ${r.holder}\nІПН
 
 /* ---------- API ---------- */
 const params = new URLSearchParams(location.search);
+// Сервер принимаем только с адреса бесплатного туннеля Cloudflare (или с того же сайта):
+// чужая ссылка с ?api=… не сможет подсунуть поддельный сервер с чужими реквизитами.
+const API_RE = /^https:\/\/[a-z0-9]+(?:-[a-z0-9]+)+\.trycloudflare\.com$/;
+const okApi = (u) => typeof u === "string" && (API_RE.test(u) || u === location.origin);
 let API = params.get("api") || "";
-try { if (!API) API = localStorage.getItem("crm_api") || ""; } catch (_) {}
+let API_TS = Number(params.get("at") || 0);
+if (!okApi(API)) { API = ""; API_TS = 0; }
+try {
+  const ls = localStorage.getItem("crm_api") || "", lsTs = Number(localStorage.getItem("crm_api_ts") || 0);
+  if (okApi(ls) && (!API || lsTs > API_TS)) { API = ls; API_TS = lsTs; }
+} catch (_) {}
+function rememberApi() { try { localStorage.setItem("crm_api", API); localStorage.setItem("crm_api_ts", String(API_TS)); } catch (_) {} }
 
-async function refreshApiUrl() {
+async function refreshApiUrl(useGithubApi = true) {
   const owner = location.hostname.split(".")[0];
   const repo = location.pathname.split("/").filter(Boolean)[0];
   if (!location.hostname.endsWith("github.io") || !repo) return false;
   // 1) API GitHub — без кэша; 2) raw-файл — запасной вариант (кэшируется до 5 минут)
   const sources = [
-    [`https://api.github.com/repos/${owner}/${repo}/contents/api.json?ref=bot-data&t=${Date.now()}`, { headers: { Accept: "application/vnd.github.raw+json" }, cache: "no-store" }],
+    useGithubApi && [`https://api.github.com/repos/${owner}/${repo}/contents/api.json?ref=bot-data&t=${Date.now()}`, { headers: { Accept: "application/vnd.github.raw+json" }, cache: "no-store" }],
     [`https://raw.githubusercontent.com/${owner}/${repo}/bot-data/api.json?t=${Date.now()}`, { cache: "no-store" }],
-  ];
+  ].filter(Boolean);
   for (const [url, opts] of sources) {
     try {
       const r = await fetch(url, opts);
       if (!r.ok) continue;
       const j = await r.json();
-      if (j.api && j.api !== API) { API = j.api; try { localStorage.setItem("crm_api", API); } catch (_) {} return true; }
+      if (!okApi(j.api)) continue;
+      const ts = Number(j.ts || 0);
+      if (j.api !== API && ts >= API_TS) { API = j.api; API_TS = ts; rememberApi(); return true; }
       if (j.api) return false;
     } catch (_) {}
   }
@@ -150,16 +162,25 @@ async function api(path, { method = "GET", body, form } = {}, retried = false) {
   if (form) payload = form;
   else if (body !== undefined) { headers["Content-Type"] = "application/json"; payload = JSON.stringify(body); }
   let res;
-  try { res = await fetch(API + path, { method, headers, body: payload }); }
-  catch (e) {
-    if (!retried && await refreshApiUrl()) return api(path, { method, body, form }, true);
-    throw new Error("Нет связи с сервером. Закройте и откройте приложение");
+  try {
+    res = await fetch(API + path, { method, headers, body: payload });
+    if (!retried && [502, 503, 504, 530].includes(res.status)) throw new Error("gateway");
+  } catch (e) {
+    // Сервер недоступен — скорее всего бот перезапускается и адрес сменился. Ждём новый адрес до ~3 минут.
+    if (!retried) {
+      for (let i = 0; i < 18; i++) {
+        if (await refreshApiUrl(i % 3 === 0)) return api(path, { method, body, form }, true);
+        if (i === 0) toast("Бот перезапускается, подождите…");
+        await new Promise((r) => setTimeout(r, 10000));
+      }
+    }
+    throw new Error("Нет связи с сервером. Попробуйте позже");
   }
   if (path.endsWith("/file")) { if (!res.ok) throw new Error("Файл недоступен"); return res.blob(); }
   let data = {};
   try { data = await res.json(); } catch (_) {}
-  if (!res.ok) { const err = new Error(data.error || "Ошибка " + res.status); err.code = data.code; throw err; }
-  try { localStorage.setItem("crm_api", API); } catch (_) {}
+  if (!res.ok) { const err = new Error(data.error || "Ошибка сервера, попробуйте ещё раз"); err.code = data.code; throw err; }
+  rememberApi();
   return data;
 }
 
@@ -171,7 +192,7 @@ let renderToken = 0;
 let badge = 0;
 
 const TABS_ADMIN = [["home", "home", "Главная"], ["clients", "users", "Клиенты"], ["receipts", "receipt", "Квитанции"], ["reports", "chart", "Отчёты"], ["more", "grid", "Ещё"]];
-const TABS_WORKER = [["home", "home", "Главная"], ["clients", "users", "Клиенты"], ["receipts", "receipt", "Квитанции"], ["reports", "chart", "Доход"], ["reqs", "card", "Реквизиты"]];
+const TABS_WORKER = [["home", "home", "Главная"], ["clients", "users", "Клиенты"], ["receipts", "receipt", "Квитанции"], ["reports", "chart", "Заработок"], ["reqs", "card", "Реквизиты"]];
 
 function renderTabs() {
   const tabs = ME.admin ? TABS_ADMIN : TABS_WORKER;
@@ -433,7 +454,7 @@ function Home() {
         h("div", { class: "q", onclick: () => newClientSheet() }, icon("plus", "lg"), h("div", { class: "tx" }, "Клиент")),
         h("div", { class: "q", onclick: () => go("receipts") }, icon("receipt", "lg"), h("div", { class: "tx" }, "Квитанции"),
           d.pending.count ? h("span", { class: "count-badge" }, d.pending.count) : null),
-        h("div", { class: "q", onclick: () => go("reports") }, icon("chart", "lg"), h("div", { class: "tx" }, ME.admin ? "Отчёт" : "Доход"))),
+        h("div", { class: "q", onclick: () => go("reports") }, icon("chart", "lg"), h("div", { class: "tx" }, ME.admin ? "Отчёт" : "Заработок"))),
       att.length ? h("div", null, h("div", { class: "subtitle" }, "Требует внимания"),
         stagger(h("div", { class: "attention" }, ...att.map(([ic, bg, fg, text, n, fn]) => h("div", { class: "att", onclick: fn },
           h("div", { class: "ico", style: `background:${bg};color:${fg}` }, icon(ic, "sm")),
@@ -563,14 +584,14 @@ function ClientScreen(id) {
     const req = c.requisite;
     profile.append(avatar, h("div", { class: "name" }, c.name), h("div", { class: "phone" }, c.phone || "—"),
       h("div", { class: "actions" },
-        c.phone ? h("div", { class: "act", onclick: () => contactSheet(c) }, icon("msg", "sm"), "Связаться") : null,
+        c.phone ? h("div", { class: "act", onclick: () => contactSheet(c) }, icon("msg", "sm"), "Написать") : null,
         h("div", { class: "act", onclick: () => receiptSheet(c) }, icon("receipt", "sm"), "Квитанция"),
         req && req.active ? h("div", { class: "act", onclick: () => shareText(reqText(req)) }, icon("send", "sm"), "Реквизиты") : null,
         c.can_manage ? h("div", { class: "act", onclick: () => clientMenu(c) }, icon("more", "sm"), "Ещё")
           : h("div", { class: "act", onclick: () => editClientSheet(c) }, icon("user", "sm"), "Изменить")));
 
     const reqCard = h("div", { class: "card" },
-      h("div", { class: "row between", style: "margin-bottom:4px" }, h("b", { class: "row", style: "gap:8px" }, icon("card", "sm"), "Реквизит для оплаты"),
+      h("div", { class: "row between", style: "margin-bottom:4px" }, h("b", { class: "row", style: "gap:8px" }, icon("card", "sm"), "Реквизиты для оплаты"),
         h("button", { class: "copy", onclick: () => pickRequisite(c) }, req ? "Сменить" : "Выбрать")),
       req ? h("div", null,
         ...[["IBAN", req.iban], ["Получатель", req.holder], ["ІПН", req.ipn]].map(([k, v]) =>
@@ -579,10 +600,10 @@ function ClientScreen(id) {
         req.active ? h("div", { class: "btns", style: "margin-top:10px" },
           h("button", { class: "btn sm", onclick: () => copy(reqText(req), "Реквизиты скопированы") }, icon("copy", "xs"), "Копировать"),
           h("button", { class: "btn sm share-btn", onclick: () => shareText(reqText(req)) }, icon("send", "xs"), "Отправить клиенту"))
-          : h("div", { class: "hint warn" }, "⚠️ Этот реквизит не рабочий — выберите другой"))
+          : h("div", { class: "hint warn" }, "⚠️ Этот реквизит нерабочий — выберите другой"))
         : h("div", { class: "hint" }, "Выберите, куда клиент будет платить"));
 
-    const paid = c.payments.filter((p) => p.status === "confirmed").reduce((a, p) => a + p.amount, 0);
+    const paid = c.paid ?? c.payments.filter((p) => p.status === "confirmed").reduce((a, p) => a + p.amount, 0);
     const commentsBox = h("div", { class: "timeline" }, ...c.comments.slice().reverse().map(commentNode));
     const cInput = h("input", { class: "input", placeholder: "Написать комментарий…", enterkeyhint: "send" });
     const cSend = h("button", { class: "btn primary" }, icon("send", "sm"));
@@ -667,7 +688,7 @@ function paymentSheet(p) {
     h("div", { class: "row between", style: "margin-top:12px" }, h("div", { class: "amount", style: "font-size:26px;font-weight:800" }, money(p.amount)),
       h("span", { class: "badge s-" + p.status }, icon(PST[p.status][0], "xs"), PST[p.status][1])),
     h("div", { class: "small muted", style: "margin-top:4px" }, "Загружена " + dt(p.submitted_at), p.reviewed_at ? " · проверена " + dt(p.reviewed_at) : ""),
-    p.share != null ? h("div", { class: "small", style: "margin-top:4px;color:var(--green)" }, `Сотруднику ${money(p.share)} (${p.percent}%)`) : null];
+    p.share != null ? h("div", { class: "small", style: "margin-top:4px;color:var(--green)" }, `Заработок сотрудника ${money(p.share)} (${p.percent ?? 0}%)`) : null];
   const after = (msg) => { closeSheet(true); toast(msg); refreshCurrent(); };
   if (ME.admin && p.status === "pending") {
     parts.push(reviewButtons(p, async (action) => {
@@ -678,7 +699,7 @@ function paymentSheet(p) {
   }
   if (ME.admin && p.status !== "pending") {
     const del = h("button", { class: "btn red block", style: "margin-top:12px" }, icon("trash", "sm"), "Удалить квитанцию");
-    del.onclick = async () => { if (await confirmAsk("Удалить квитанцию? Она пропадёт из отчётов.")) withLoading(del, async () => { await api("/api/payments/" + p.id, { method: "DELETE" }); after("Удалено"); }); };
+    del.onclick = async () => { if (await confirmAsk(p.status === "confirmed" ? "Удалить квитанцию? Она пропадёт из отчётов, заработок сотрудника уменьшится." : "Удалить квитанцию?")) withLoading(del, async () => { await api("/api/payments/" + p.id, { method: "DELETE" }); after("Удалено"); }); };
     parts.push(del);
   }
   openSheet("Квитанция", h("div", null, ...parts.filter(Boolean)));
@@ -692,27 +713,30 @@ async function pickRequisite(c) {
     try { await api("/api/clients/" + c.id, { method: "PATCH", body: { requisite_id: r.id } }); closeSheet(); toast("Реквизит выбран"); refreshCurrent(); }
     catch (e) { toast(e.message, true); }
   } }, h("span", { class: "radio" }), h("div", { class: "grow" }, h("div", { style: "font-weight:600" }, r.holder), h("div", { class: "mono muted" }, "…" + r.iban.slice(-8))))));
-  openSheet("Реквизит для клиента", active.length ? h("div", null, box,
-    c.requisite ? h("button", { class: "btn red block", style: "margin-top:10px", onclick: async () => {
-      await api("/api/clients/" + c.id, { method: "PATCH", body: { requisite_id: null } }); closeSheet(); refreshCurrent();
-    } }, "Отвязать реквизит") : null) : emptyState("💳", "Нет рабочих реквизитов"));
+  const unlink = c.requisite ? h("button", { class: "btn red block", style: "margin-top:10px", onclick: async () => {
+    try { await api("/api/clients/" + c.id, { method: "PATCH", body: { requisite_id: null } }); closeSheet(); toast("Реквизиты отвязаны"); refreshCurrent(); }
+    catch (e) { toast(e.message, true); }
+  } }, "Отвязать реквизиты") : null;
+  openSheet("Реквизиты для оплаты", h("div", null, active.length ? box : emptyState("💳", "Нет рабочих реквизитов"), unlink));
 }
 
 async function clientMenu(c) {
   let team = [];
   try { team = (await api("/api/team")).items.filter((u) => u.state === "active"); } catch (_) {}
   const box = h("div", { class: "options" }, ...team.map((u) => h("div", { class: "opt" + (c.worker && c.worker.id === u.id ? " on" : ""), onclick: async () => {
-    try { await api("/api/clients/" + c.id, { method: "PATCH", body: { worker_id: u.id } }); closeSheet(); toast("Передан: " + u.nick); refreshCurrent(); }
+    if (c.worker && c.worker.id === u.id) return toast("Клиент уже у этого сотрудника");
+    if (!await confirmAsk(`Передать клиента «${c.name}» сотруднику ${u.nick}?`)) return;
+    try { await api("/api/clients/" + c.id, { method: "PATCH", body: { worker_id: u.id } }); closeSheet(); toast("Клиент передан: " + u.nick); refreshCurrent(); }
     catch (e) { toast(e.message, true); }
   } }, h("span", { class: "radio" }), h("div", { class: "grow" }, u.nick), h("span", { class: "small muted" }, u.percent + "%"))));
   const edit = h("button", { class: "btn block", style: "margin-top:14px" }, icon("user", "sm"), "Изменить имя и телефон");
   edit.onclick = () => editClientSheet(c);
   const del = h("button", { class: "btn red block", style: "margin-top:8px" }, icon("trash", "sm"), "Удалить клиента");
   del.onclick = async () => {
-    if (!await confirmAsk(`Удалить клиента «${c.name}»? Оплаты останутся в отчётах.`)) return;
+    if (!await confirmAsk(`Удалить клиента «${c.name}»? Комментарии удалятся, оплаты останутся в отчётах.`)) return;
     withLoading(del, async () => { await api("/api/clients/" + c.id, { method: "DELETE" }); closeSheet(true); toast("Удалено"); back(); });
   };
-  openSheet("Передать сотруднику", h("div", null, box, edit, del));
+  openSheet("Управление клиентом", h("div", null, h("div", { class: "subtitle", style: "margin-top:0" }, "Передать сотруднику"), box, edit, del));
 }
 
 function editClientSheet(c) {
@@ -758,7 +782,7 @@ async function receiptSheet(c, setPaid = false) {
   const send = h("button", { class: "btn primary block", style: "margin-top:6px" }, icon("send", "sm"), setPaid ? "Прикрепить и отметить «Оплачено»" : "Отправить на проверку");
   send.onclick = () => withLoading(send, async () => {
     if (!file) { shake(drop); throw new Error("Добавьте фото квитанции"); }
-    const sum = amount.value.replace(/\s/g, "").replace(",", ".");
+    const sum = amount.value.toLowerCase().replace(/[\s\u00a0₴]|грн|uah/g, "").replace(",", ".").replace(/\.$/, "");
     if (!/^\d{1,9}(\.\d{1,2})?$/.test(sum) || Number(sum) <= 0) { shake(amount); throw new Error("Проверьте сумму"); }
     if (reqBox && !reqId) throw new Error("Выберите реквизит");
     const fd = new FormData(); fd.append("file", file); fd.append("amount", sum); if (reqId && !c.requisite) fd.append("requisite_id", reqId);
@@ -788,7 +812,7 @@ function Receipts() {
   const box = h("div");
   const tabs = h("div", { class: "seg" });
   const ind = h("div", { class: "ind" });
-  const keys = [["pending", "На проверке"], ["confirmed", "Приняты"], ["rejected", "Отклонены"]];
+  const keys = [["pending", "На проверке"], ["confirmed", "Подтверждены"], ["rejected", "Отклонены"]];
   const drawTabs = () => {
     tabs.replaceChildren(ind, ...keys.map(([k, t]) => h("button", { class: receiptTab === k ? "on" : "", onclick: () => { receiptTab = k; haptic("select"); drawTabs(); fetchList(); } }, t)));
     const i = keys.findIndex(([k]) => k === receiptTab);
@@ -803,10 +827,10 @@ function Receipts() {
       if (receiptTab === "pending" && ME.admin) setBadge(d.items.length);
       if (!d.items.length) { box.replaceChildren(emptyState(receiptTab === "pending" ? "✨" : "🗂", receiptTab === "pending" ? "Всё проверено" : "Пока пусто")); return; }
       const total = d.items.reduce((a, p) => a + p.amount, 0);
-      box.replaceChildren(
+      box.replaceChildren(...[
         h("div", { class: "list-meta" }, h("span", null, plural(d.items.length, "квитанция", "квитанции", "квитанций")), h("span", null, money(total))),
         ME.admin && receiptTab === "pending" ? h("div", { class: "swipe-hint" }, "← отклонить", icon("swap", "xs"), "подтвердить →") : null,
-        ...d.items.map((p, i) => { const el = receiptCard(p, box); el.style.animationDelay = Math.min(i, 8) * 60 + "ms"; return el; }));
+        ...d.items.map((p, i) => { const el = receiptCard(p, box); el.style.animationDelay = Math.min(i, 8) * 60 + "ms"; return el; })].filter(Boolean));
     } catch (e) { box.replaceChildren(emptyState("😕", e.message)); }
   };
   drawTabs();
@@ -850,13 +874,13 @@ function receiptCard(p, box) {
           h("div", { class: "small muted" }, [p.phone, p.requisite ? "💳 …" + p.requisite.split(" ")[0].slice(-6) : null].filter(Boolean).join(" · "))),
         p.client_id ? icon("right", "sm chev") : null),
       h("div", { class: "small muted", style: "margin-top:6px" }, `${p.worker || "—"} · ${dt(p.submitted_at)}`, p.reviewer ? ` · проверил ${p.reviewer}` : ""),
-      p.share != null ? h("div", { class: "small", style: "margin-top:4px;color:var(--green)" }, `Сотруднику ${money(p.share)} (${p.percent}%)`) : null,
+      p.share != null ? h("div", { class: "small", style: "margin-top:4px;color:var(--green)" }, `Заработок сотрудника ${money(p.share)} (${p.percent ?? 0}%)`) : null,
       canReview ? reviewButtons(p, review) : null,
       ME.admin && p.status !== "pending" ? h("button", { class: "btn red sm", style: "margin-top:10px", onclick: async () => {
-        if (!await confirmAsk("Удалить квитанцию? Она пропадёт из отчётов.")) return;
+        if (!await confirmAsk(p.status === "confirmed" ? "Удалить квитанцию? Она пропадёт из отчётов, заработок сотрудника уменьшится." : "Удалить квитанцию?")) return;
         try { await api("/api/payments/" + p.id, { method: "DELETE" }); toast("Удалено"); remove(); } catch (e) { toast(e.message, true); }
       } }, icon("trash", "xs"), "Удалить") : null));
-  wrap.append(h("div", { class: "swipe-bg" }, h("span", { class: "ok" }, icon("check"), "Принять"), h("span", { class: "no" }, "Отклонить", icon("x"))), card);
+  wrap.append(h("div", { class: "swipe-bg" }, h("span", { class: "ok" }, icon("check"), "Подтвердить"), h("span", { class: "no" }, "Отклонить", icon("x"))), card);
   if (canReview) enableSwipe(wrap, card, review, p);
   return wrap;
 }
@@ -913,11 +937,11 @@ function Reports() {
       if (token !== renderToken) return;
       const big = h("div", { class: "big count-up" }, money(0));
       body.replaceChildren(...[
-        h("div", { class: "card hero" }, h("div", { class: "label" }, ME.admin ? "Оплачено клиентами" : "Ваш заработок"), big,
+        h("div", { class: "card hero" }, h("div", { class: "label" }, ME.admin ? "Оплачено" : "Ваш заработок"), big,
           h("div", { class: "meta" }, `${plural(d.count, "оплата", "оплаты", "оплат")} · ${d.title}`)),
         h("div", { class: "kpis" },
-          ME.admin ? kpi("Сотрудникам", money(d.share), null, "users") : kpi("Оплатили клиенты", money(d.total), null, "wallet"),
-          ME.admin ? kpi("Остаток", money(d.rest), "var(--green)", "wallet") : kpi("Оплат", d.count, null, "receipt"),
+          ME.admin ? kpi("Заработок сотрудников", money(d.share), null, "users") : kpi("Оплачено клиентами", money(d.total), null, "wallet"),
+          ME.admin ? kpi("Остаётся вам", money(d.rest), "var(--green)", "wallet") : kpi("Оплат", d.count, null, "receipt"),
           ME.admin ? kpi("Новых клиентов", d.new_clients, null, "plus") : null,
           ME.admin && d.count ? kpi("Средний чек", money(d.total / d.count), null, "chart") : null),
         d.series.length > 1 ? h("div", { class: "card", style: "margin-top:10px" },
@@ -934,7 +958,7 @@ function Reports() {
   const drawChips = () => chips.replaceChildren(...Object.entries(ME.periods).map(([k, t]) =>
     h("div", { class: "chip" + (reportPeriod === k ? " on" : ""), onclick: () => { reportPeriod = k; haptic("select"); drawChips(); fetchReport(); } }, t)));
   drawChips();
-  mount(h("div", null, appbar(ME.admin ? "Отчёты" : "Мой доход"), chips, body));
+  mount(h("div", null, appbar(ME.admin ? "Отчёты" : "Мой заработок"), chips, body));
   attachPullToRefresh();
   fetchReport();
 }
@@ -972,7 +996,7 @@ function AuditScreen(pushed) {
       ...groups.map(([title, rows]) => h("div", null, h("div", { class: "group-title" }, title),
         h("div", { class: "card", style: "padding:4px 14px" }, ...rows.map((r) =>
           h("div", { class: "kv", style: "align-items:flex-start" },
-            h("div", { class: "grow" }, h("div", { style: "font-size:14px" }, r.text.replace(/ \[приложение\]$/, "")),
+            h("div", { class: "grow" }, h("div", { style: "font-size:14px" }, r.text.replace(/ \[приложение\]$/, " · 📱")),
               h("div", { class: "small muted", style: "margin-top:2px" }, r.who || "—")),
             h("div", { class: "small muted", style: "flex:none" }, tm(r.at))))))));
   }, pushed);
@@ -984,8 +1008,10 @@ function RequisitesScreen(pushed) {
     const list = h("div", { class: "list" }, ...d.items.map((r) => {
       const sw = h("button", { class: "switch" + (r.active ? " on" : ""), "aria-label": "Рабочий", onclick: async (e) => {
         e.stopPropagation();
-        const next = !r.active; sw.classList.toggle("on", next); haptic("medium");
-        try { await api("/api/requisites/" + r.id, { method: "PATCH", body: { active: next } }); r.active = next; card.style.opacity = next ? 1 : .6; toast(next ? "Рабочий" : "Не рабочий"); }
+        const next = !r.active;
+        if (!next && !await confirmAsk("Сделать реквизит нерабочим? Сотрудники получат уведомление.")) return;
+        sw.classList.toggle("on", next); haptic("medium");
+        try { await api("/api/requisites/" + r.id, { method: "PATCH", body: { active: next } }); r.active = next; card.style.opacity = next ? 1 : .6; toast(next ? "🟢 Теперь рабочий" : "🔴 Теперь нерабочий"); }
         catch (err) { sw.classList.toggle("on", r.active); toast(err.message, true); }
       } });
       const card = h("div", { class: "card", style: `animation:item-in .4s var(--ease) both;opacity:${r.active ? 1 : .6};transition:opacity .3s` },
@@ -1055,7 +1081,7 @@ function ibanValid(v) {
   let m = 0; for (const ch of s) m = (m * 10 + Number(ch)) % 97; return m === 1;
 }
 
-const STATE = { active: ["✅", "в работе"], waiting: ["🔔", "ждёт подтверждения"], invited: ["⏳", "не открыл бота"], expired: ["⌛", "приглашение истекло"], no_nick: ["⏳", "не указал ник"] };
+const STATE = { active: ["✅", "активен"], waiting: ["🔔", "ждёт подтверждения"], invited: ["⏳", "не открыл бота"], expired: ["⌛", "приглашение истекло"], no_nick: ["⏳", "не указал ник"] };
 const ROLE = { owner: "Главный админ", admin: "Админ", worker: "Сотрудник" };
 function TeamScreen(pushed) {
   load(async () => {
@@ -1079,27 +1105,30 @@ function memberSheet(u) {
     h("div", { class: "small muted", style: "margin-top:4px" }, `${STATE[u.state][0]} ${STATE[u.state][1]} · ${plural(u.clients, "клиент", "клиента", "клиентов")}, в работе ${u.work}`))];
   if (u.username && tg) parts.push(h("button", { class: "btn block ghost", style: "margin-top:12px", onclick: () => tg.openTelegramLink("https://t.me/" + u.username) }, icon("msg", "sm"), "Написать"));
   if (u.state === "waiting" && u.can_approve) {
-    const ok = h("button", { class: "btn green" }, icon("check", "sm"), "Открыть доступ"), no = h("button", { class: "btn red" }, "Отклонить");
+    const ok = h("button", { class: "btn green" }, icon("check", "sm"), "Подтвердить"), no = h("button", { class: "btn red" }, "Отклонить");
     ok.onclick = () => withLoading(ok, async () => { await api(`/api/team/${u.id}/approve`, { method: "POST", body: { ok: true } }); closeSheet(); toast("Доступ открыт"); refreshCurrent(); });
     no.onclick = async () => { if (await confirmAsk("Отклонить запрос доступа?")) withLoading(no, async () => { await api(`/api/team/${u.id}/approve`, { method: "POST", body: { ok: false } }); closeSheet(); toast("Отклонено"); refreshCurrent(); }); };
     parts.push(h("div", { class: "hint", style: "text-align:center;margin:12px 0 8px" }, "Убедитесь, что это нужный человек"), h("div", { class: "btns" }, no, ok));
   }
   if (u.can_percent) {
     const val = h("div", { style: "font-size:36px;font-weight:800;text-align:center;letter-spacing:-.02em" }, u.percent + "%");
-    const range = h("input", { type: "range", class: "range", min: "0", max: "100", step: "1", value: String(u.percent) });
+    const range = h("input", { type: "range", class: "range", min: "0", max: "100", step: "0.5", value: String(u.percent) });
     let last = u.percent;
     range.addEventListener("input", () => { val.textContent = range.value + "%"; if (range.value % 5 === 0 && range.value != last) { haptic("select"); last = range.value; } });
     const presets = h("div", { class: "chips", style: "justify-content:center" }, ...[30, 40, 50, 60].map((p) => h("div", { class: "chip", onclick: () => { range.value = p; val.textContent = p + "%"; haptic("select"); } }, p + "%")));
     const save = h("button", { class: "btn primary block", style: "margin-top:8px" }, "Сохранить процент");
-    save.onclick = () => withLoading(save, async () => {
+    save.onclick = async () => {
+      if (Number(range.value) !== Number(u.percent) && !await confirmAsk(`Поставить ${range.value}%? Весь заработок сотрудника будет пересчитан.`)) return;
+      withLoading(save, async () => {
       const r = await api(`/api/team/${u.id}`, { method: "PATCH", body: { percent: Number(range.value) } });
       closeSheet(); toast(`${range.value}% · заработок пересчитан: ${money(r.total || 0)}`); refreshCurrent();
-    });
+      });
+    };
     parts.push(h("div", { class: "subtitle" }, "Процент от оплат"), val, range, presets, save, h("div", { class: "hint", style: "text-align:center" }, "Весь заработок сотрудника пересчитается по новому проценту"));
   }
   if (u.can_manage) {
     const del = h("button", { class: "btn red block", style: "margin-top:16px" }, icon("trash", "sm"), "Удалить из команды");
-    del.onclick = async () => { if (await confirmAsk(`Удалить ${u.nick || "@" + u.username}? Доступ к боту закроется.`)) withLoading(del, async () => { await api("/api/team/" + u.id, { method: "DELETE" }); closeSheet(); toast("Удалено"); refreshCurrent(); }); };
+    del.onclick = async () => { if (await confirmAsk(`Удалить ${u.nick || "@" + u.username}? Доступ к боту закроется, его клиентов можно будет передать.`)) withLoading(del, async () => { await api("/api/team/" + u.id, { method: "DELETE" }); closeSheet(); toast("Удалено"); refreshCurrent(); }); };
     parts.push(del);
   }
   openSheet(null, h("div", null, ...parts));
@@ -1109,7 +1138,7 @@ function inviteSheet(canAdmin) {
   let role = "worker";
   const user = h("input", { class: "input", placeholder: "@username", autocapitalize: "none", autocomplete: "off" });
   const roles = h("div", { class: "options" });
-  const draw = () => roles.replaceChildren(...[["worker", "Сотрудник", "Свои клиенты и квитанции"], ...(canAdmin ? [["admin", "Админ", "Всё, кроме управления админами"]] : [])].map(([k, t, s]) =>
+  const draw = () => roles.replaceChildren(...[["worker", "Сотрудник", "Свои клиенты и квитанции"], ...(canAdmin ? [["admin", "Админ", "Всё, кроме добавления админов"]] : [])].map(([k, t, s]) =>
     h("div", { class: "opt" + (role === k ? " on" : ""), onclick: () => { role = k; haptic("select"); draw(); } }, h("span", { class: "radio" }), h("div", { class: "grow" }, h("div", null, t), h("div", { class: "small muted" }, s)))));
   draw();
   const save = h("button", { class: "btn primary block", style: "margin-top:6px" }, icon("send", "sm"), "Пригласить");
@@ -1118,7 +1147,7 @@ function inviteSheet(canAdmin) {
     closeSheet(); toast("Приглашение создано"); refreshCurrent();
     if (tg) tg.showAlert(`Попросите ${user.value.startsWith("@") ? user.value : "@" + user.value} открыть бота и нажать /start. Потом подтвердите доступ здесь.`);
   });
-  openSheet("Пригласить в команду", h("div", null, field("Username в Telegram", user), canAdmin ? field("Роль", roles) : null, save));
+  openSheet("Пригласить в команду", h("div", null, field("Ник в Telegram (@username)", user), canAdmin ? field("Роль", roles) : null, save));
   setTimeout(() => user.focus(), 350);
 }
 

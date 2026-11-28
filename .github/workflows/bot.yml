@@ -48,6 +48,9 @@ jobs:
           echo "51f7c68b57ed7269164075d7e789efce5b59355982f06392deeb037d982a51fd  $BIN" | sha256sum -c -
           chmod +x "$BIN"
           echo "CLOUDFLARED=$BIN" >> "$GITHUB_ENV"
+
+      - name: Mini App address (GitHub Pages)
+        run: |
           OWNER=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
           echo "PAGES_URL=https://$OWNER.github.io/${GITHUB_REPOSITORY#*/}/" >> "$GITHUB_ENV"
 

@@ -116,7 +116,7 @@ async def card_view(db: DB, user, rid: int, note: str = ""):
         return None, None
     lines = [note, ""] if note else []
     lines += [
-        f"💳 <b>Реквизит</b> · {'🟢 рабочий' if r['is_active'] else '🔴 не рабочий'}\n",
+        f"💳 <b>Реквизит</b> · {'🟢 рабочий' if r['is_active'] else '🔴 нерабочий'}\n",
         f"IBAN: <code>{esc(r['iban'])}</code>",
         f"Получатель: <code>{esc(r['holder'])}</code>",
         f"ІПН: <code>{esc(r['ipn'])}</code>",
@@ -174,7 +174,7 @@ async def req_toggle(cb: CallbackQuery, db: DB, user, bot: Bot):
         return await cb.answer("Реквизит не найден", show_alert=True)
     new = 0 if r["is_active"] else 1
     await db.run("UPDATE requisites SET is_active=? WHERE id=?", new, rid)
-    status = "🟢 рабочий" if new else "🔴 не рабочий"
+    status = "🟢 рабочий" if new else "🔴 нерабочий"
     await db.audit(user["id"], f"Реквизит #{rid} → {status}")
     await cb.answer(f"Теперь {status}")
     await open_card(cb, db, user, rid)

@@ -6,7 +6,7 @@ from ..db import DB
 from ..keyboards import BLUE, BTN_LOG, BTN_MY_STATS, BTN_REPORTS, btn, home_btn, kb
 from ..reports import PERIODS, admin_report, period, worker_totals
 from ..ui import show
-from ..utils import clip, esc, fit, fmt_money, fmt_short, is_admin, user_name
+from ..utils import clip, esc, fit, fmt_money, fmt_short, is_admin, pays, user_name
 
 router = Router(name="reports")
 
@@ -53,7 +53,7 @@ async def stats_view(db: DB, user) -> str:
     for kind, label in (("today", "Сегодня"), ("week", "7 дней"), ("month", "Месяц"), ("all", "Всё время")):
         s, e, _ = period(kind)
         t = await worker_totals(db, user, s, e)
-        rows.append(f"{label}: <b>{fmt_money(t['sh'])}</b> · {t['n']} опл.")
+        rows.append(f"{label}: <b>{fmt_money(t['sh'])}</b> · {pays(t['n'])}")
     c = await db.one("SELECT SUM(status='work') w, SUM(status='paid') p, SUM(status='lost') l "
                      "FROM clients WHERE worker_id=?", user["id"])
     pend = await db.one("SELECT COUNT(*) n, COALESCE(SUM(amount),0) s FROM payments "

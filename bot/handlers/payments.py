@@ -55,7 +55,7 @@ async def payment_caption(db: DB, p, viewer) -> str:
     # заработок видят только админы и сам сотрудник этой оплаты
     if (p["status"] == "confirmed" and p["worker_share"] is not None
             and (admin or p["worker_id"] == viewer["id"])):
-        lines.append(f"💵 Сотруднику: {fmt_money(p['worker_share'])} ({(p['worker_percent'] or 0):g}%)")
+        lines.append(f"💵 Заработок сотрудника: {fmt_money(p['worker_share'])} ({(p['worker_percent'] or 0):g}%)")
     return fit(lines, 1000)
 
 
@@ -170,7 +170,7 @@ async def receipt_amount_wrong(message: Message, state: FSMContext):
 async def receipt_requisite(cb: CallbackQuery, state: FSMContext, db: DB, user, bot: Bot):
     r = await db.one("SELECT id FROM requisites WHERE id=? AND is_active=1", int(cb.data.split(":")[2]))
     if r is None:
-        return await cb.answer("Реквизит не рабочий — выберите другой", show_alert=True)
+        return await cb.answer("Реквизит нерабочий — выберите другой", show_alert=True)
     await cb.answer()
     await finalize(cb, state, db, user, bot, r["id"])
 
@@ -378,7 +378,7 @@ async def payment_delete(cb: CallbackQuery, db: DB, user, bot: Bot):
         pass
     if p["status"] == "confirmed" and p["worker_id"] and p["worker_id"] != user["id"]:
         await notify_user(bot, db, p["worker_id"],
-                          f"⚠️ Удалена оплата {esc(p['client_name'])} · {fmt_money(p['amount'])}\n"
-                          f"Заработок −{fmt_money(p['worker_share'])}")
+                          f"⚠️ Удалена квитанция: {esc(p['client_name'])} · {fmt_money(p['amount'])}\n"
+                          f"Ваш заработок уменьшился на {fmt_money(p['worker_share'])}")
     await notify_admins(bot, db, f"🗑 {user_name(user)} удалил квитанцию {esc(p['client_name'])} · "
                                  f"{fmt_money(p['amount'])}", exclude_user_id=user["id"])

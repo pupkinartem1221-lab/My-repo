@@ -8,7 +8,7 @@ from ..db import DB
 from ..keyboards import menu_kb
 from ..middleware import NickForm
 from ..ui import show
-from ..utils import day_range, esc, fmt_money, is_admin, today
+from ..utils import day_range, esc, fmt_money, is_admin, pays, today
 
 router = Router(name="common")
 
@@ -21,7 +21,7 @@ async def menu_view(db: DB, user, note: str = ""):
         pend = await db.one("SELECT COUNT(*) n FROM payments WHERE status='pending'")
         paid = await db.one("SELECT COUNT(*) n, COALESCE(SUM(amount),0) s FROM payments "
                             "WHERE status='confirmed' AND reviewed_at>=? AND reviewed_at<?", s, e)
-        lines.append(f"\n💰 Сегодня: <b>{fmt_money(paid['s'])}</b> · {paid['n']} опл.")
+        lines.append(f"\n💰 Сегодня: <b>{fmt_money(paid['s'])}</b> · {pays(paid['n'])}")
         lines.append(f"⏳ На проверке: <b>{pend['n']}</b>")
         return "\n".join(lines), menu_kb(user, pend["n"])
     work = await db.one("SELECT COUNT(*) n FROM clients WHERE worker_id=? AND status='work'", user["id"])

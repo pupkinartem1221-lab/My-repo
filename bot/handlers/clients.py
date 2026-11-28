@@ -58,7 +58,7 @@ def client_btn(c) -> list:
 def req_line(r) -> str:
     if r is None:
         return "💳 Реквизит не выбран"
-    mark = "" if r["is_active"] else " · 🔴 не рабочий!"
+    mark = "" if r["is_active"] else " · 🔴 нерабочий!"
     return f"💳 …{esc(r['iban'][-6:])} {esc(clip(r['holder'], 30))}{mark}"
 
 
@@ -163,7 +163,7 @@ async def card_view(db: DB, user, c, note: str = ""):
 
     money = f"💰 Оплачено: <b>{fmt_money(sums['paid'])}</b>"
     if sums["pend"]:
-        money += f" · ⏳ {fmt_money(sums['pend'])}"
+        money += f" · ⏳ на проверке {fmt_money(sums['pend'])}"
     lines = [note, ""] if note else []
     lines += [
         f"👤 <b>{esc(c['name'])}</b>",
@@ -195,7 +195,7 @@ async def card_view(db: DB, user, c, note: str = ""):
         [main_btn("🧾 Квитанция", f"pay:new:{cid}"), btn("💳 Реквизит", f"cl:rq:{cid}")],
         [b for b in (btn("💬 Комментарий", f"cl:cm:{cid}"), comments_btn) if b],
         [btn(f"💰 Оплаты · {sums['n']}", f"pay:cl:{cid}")]
-        + ([btn("💬 Написать", f"cl:msg:{cid}")] if c["phone"] else []),
+        + ([btn("✉️ Написать", f"cl:msg:{cid}")] if c["phone"] else []),
     ]
     if is_admin(user):
         rows.append([btn("👷 Передать", f"cl:w:{cid}"), danger_btn("🗑 Удалить", f"cl:del:{cid}")])
@@ -230,7 +230,7 @@ async def client_status(cb: CallbackQuery, state: FSMContext, db: DB, user, bot:
     if st not in CLIENT_STATUSES:
         return await cb.answer()
     if c["status"] == st:
-        return await cb.answer("Уже так")
+        return await cb.answer("Статус уже такой")
     if st == "paid" and not await has_receipt(db, c["id"]):
         # «Оплачено» только с квитанцией: сразу просим её прикрепить
         from .payments import begin_receipt
@@ -347,7 +347,7 @@ async def client_req_set(cb: CallbackQuery, db: DB, user):
     if rid:
         r = await db.one("SELECT * FROM requisites WHERE id=? AND is_active=1", rid)
         if r is None:
-            return await cb.answer("Реквизит не рабочий или удалён", show_alert=True)
+            return await cb.answer("Реквизит нерабочий или удалён", show_alert=True)
     await db.run("UPDATE clients SET requisite_id=? WHERE id=?", rid or None, c["id"])
     await db.audit(user["id"], f"Клиент #{c['id']}: реквизит → {('#' + str(rid)) if rid else 'отвязан'}")
     await cb.answer("Сохранено")
@@ -364,7 +364,7 @@ async def client_req_show(cb: CallbackQuery, db: DB, user):
         return await cb.answer("Реквизит не выбран", show_alert=True)
     r = await db.one("SELECT * FROM requisites WHERE id=?", c["requisite_id"])
     if not r["is_active"]:
-        return await cb.answer("⚠️ Этот реквизит не рабочий — выберите другой", show_alert=True)
+        return await cb.answer("⚠️ Этот реквизит нерабочий — выберите другой", show_alert=True)
     await cb.answer()
     await show_client_req(cb, c, r)
 
@@ -397,7 +397,7 @@ async def client_worker_set(cb: CallbackQuery, db: DB, user, bot: Bot):
     if c is None or worker is None:
         return await cb.answer("Не найдено", show_alert=True)
     if c["worker_id"] == worker["id"]:
-        return await cb.answer("Клиент уже у него")
+        return await cb.answer("Клиент уже у этого сотрудника")
     # неподтверждённые оплаты переходят вместе с клиентом
     await db.run_many([
         ("UPDATE clients SET worker_id=? WHERE id=?", worker["id"], c["id"]),
@@ -405,7 +405,7 @@ async def client_worker_set(cb: CallbackQuery, db: DB, user, bot: Bot):
     ])
     await db.audit(user["id"], f"Клиент #{c['id']} передан {worker['nick']}")
     await cb.answer("Передано")
-    await open_card(cb, db, user, c["id"], f"✅ Передан: {user_name(worker)}")
+    await open_card(cb, db, user, c["id"], f"✅ Клиент передан: {user_name(worker)}")
     if c["worker_id"] and c["worker_id"] not in (user["id"], worker["id"]):
         await notify_user(bot, db, c["worker_id"], f"📤 Клиент {esc(c['name'])} передан другому сотруднику.")
     if worker["id"] != user["id"]:

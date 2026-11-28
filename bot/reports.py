@@ -1,7 +1,7 @@
 from datetime import date, timedelta
 
 from .db import DB
-from .utils import day_range, deleted_req_label, esc, fit, fmt_money, today
+from .utils import day_range, deleted_req_label, esc, fit, fmt_money, pays, today
 
 PERIODS = {
     "today": "Сегодня",
@@ -57,9 +57,9 @@ async def admin_report(db: DB, start: int, end: int, title: str) -> str:
 
     lines = [
         f"📊 <b>{esc(title)}</b>\n",
-        f"💰 Оплачено: <b>{fmt_money(tot['s'])}</b> · {tot['n']} опл.",
-        f"👷 Сотрудникам: {fmt_money(tot['sh'])}",
-        f"🏦 Остаток: <b>{fmt_money(tot['s'] - tot['sh'])}</b>",
+        f"💰 Оплачено: <b>{fmt_money(tot['s'])}</b> · {pays(tot['n'])}",
+        f"💵 Заработок сотрудников: {fmt_money(tot['sh'])}",
+        f"🏦 Остаётся вам: <b>{fmt_money(tot['s'] - tot['sh'])}</b>",
         f"🆕 Новых клиентов: {new_clients['n']}",
     ]
     if pend["n"]:
@@ -68,7 +68,7 @@ async def admin_report(db: DB, start: int, end: int, title: str) -> str:
         lines.append("\n<b>Сотрудники</b>")
         for r in by_worker:
             name = esc(r["nick"] or r["username"] or (f"id{r['wid']}" if r["wid"] else "удалён"))
-            lines.append(f"• {name}: {fmt_money(r['s'])} → 💵 {fmt_money(r['sh'])}")
+            lines.append(f"• {name}: {fmt_money(r['s'])} · заработок {fmt_money(r['sh'])}")
     if by_req:
         lines.append("\n<b>Поступления по реквизитам</b>")
         for r in by_req:
@@ -97,7 +97,7 @@ async def worker_report(db: DB, user, start: int, end: int, title: str) -> str:
     return (
         f"📊 <b>{esc(title)}</b>\n\n"
         f"💵 Ваш заработок: <b>{fmt_money(tot['sh'])}</b>\n"
-        f"💰 Оплатили клиенты: {fmt_money(tot['s'])} · {tot['n']} опл.\n"
+        f"💰 Оплачено клиентами: {fmt_money(tot['s'])} · {pays(tot['n'])}\n"
         f"🆕 Новых клиентов: {new_clients['n']}"
     )
 
