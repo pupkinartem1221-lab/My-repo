@@ -24,6 +24,7 @@ from .middleware import PENDING_TTL
 from .notify import notify_admins, notify_all, notify_user, send_safe, with_hide
 from .keyboards import btn, danger_btn, kb, main_btn, ok_btn
 from .reports import PERIODS, period
+from .rules import RECEIPT_REQUIRED, has_receipt, revert_paid_if_no_receipt
 from .utils import (CLIENT_STATUSES, TZ, day_range, esc, fmt_money, iban_ok, ipn_checksum_ok, is_admin,
                     like_escape, now, parse_money, today, user_name)
 
@@ -35,8 +36,8 @@ SHARE_SQL = "CAST(amount * COALESCE(worker_percent, 0) / 100.0 + 0.5 AS INTEGER)
 
 
 class ApiError(Exception):
-    def __init__(self, status: int, message: str):
-        self.status, self.message = status, message
+    def __init__(self, status: int, message: str, code: str | None = None):
+        self.status, self.message, self.code = status, message, code
 
 
 def check_init_data(init_data: str, token: str) -> dict | None:
@@ -61,8 +62,8 @@ def check_init_data(init_data: str, token: str) -> dict | None:
         return None
 
 
-def bad(message: str, status: int = 400):
-    raise ApiError(status, message)
+def bad(message: str, status: int = 400, code: str | None = None):
+    raise ApiError(status, message, code)
 
 
 def need_admin(user):
@@ -120,7 +121,7 @@ class Api:
                 request["user"] = user
             resp = await handler(request)
         except ApiError as e:
-            resp = web.json_response({"error": e.message}, status=e.status)
+            resp = web.json_response({"error": e.message, "code": e.code}, status=e.status)
         except web.HTTPException as e:
             resp = web.json_response({"error": e.reason}, status=e.status)
         except Exception as e:
@@ -304,6 +305,8 @@ class Api:
             st = data["status"]
             if st not in CLIENT_STATUSES:
                 bad("Неизвестный статус")
+            if st == "paid" and st != c["status"] and not await has_receipt(db, c["id"]):
+                bad(RECEIPT_REQUIRED, 409, "receipt_required")
             if st != c["status"]:
                 await db.run("UPDATE clients SET status=? WHERE id=?", st, c["id"])
                 old, new = CLIENT_STATUSES[c["status"]], CLIENT_STATUSES[st]
@@ -446,6 +449,9 @@ class Api:
         if req and not c["requisite_id"] and req["is_active"]:
             await db.run("UPDATE clients SET requisite_id=? WHERE id=?", req["id"], c["id"])
         await db.audit(u["id"], f"Квитанция #{pid}: клиент #{c['id']}, {fmt_money(amount)} [приложение]")
+        if form.get("set_paid") == "1" and c["status"] != "paid":
+            await db.run("UPDATE clients SET status='paid' WHERE id=?", c["id"])
+            await db.audit(u["id"], f"Клиент #{c['id']}: → ✅ Оплачено (с квитанцией #{pid}) [приложение]")
 
         review = kb([ok_btn("✅ Подтвердить", f"pay:ok:{pid}"), danger_btn("❌ Отклонить", f"pay:no:{pid}")],
                     [btn("👤 Клиент", f"cl:v:{c['id']}")])
@@ -507,6 +513,8 @@ class Api:
         else:
             await db.audit(u["id"], f"Отклонил квитанцию #{pid} ({amount}) [приложение]")
             worker_text = sub_text = f"❌ Квитанция отклонена: {name} · {amount}"
+            if await revert_paid_if_no_receipt(db, p["client_id"]):
+                worker_text = sub_text = worker_text + "\nСтатус клиента вернулся в 🔄 В работе"
             other = f"❌ {user_name(u)} отклонил: {name} · {amount}"
         open_kb = kb([main_btn("👤 Открыть клиента", f"cl:v:{p['client_id']}")]) if p["client_id"] else None
 
@@ -529,9 +537,7 @@ class Api:
         p = await db.one("SELECT * FROM payments WHERE id=?", pid)
         if p is None or (await db.run("DELETE FROM payments WHERE id=?", pid)).rowcount == 0:
             bad("Уже удалена", 404)
-        if p["status"] == "confirmed" and p["client_id"]:
-            await db.run("UPDATE clients SET status='work' WHERE id=? AND status='paid' AND NOT EXISTS "
-                         "(SELECT 1 FROM payments WHERE client_id=? AND status='confirmed')", p["client_id"], p["client_id"])
+        await revert_paid_if_no_receipt(db, p["client_id"])  # «Оплачено» без квитанции не остаётся
         await db.audit(u["id"], f"Удалил квитанцию #{pid} ({fmt_money(p['amount'])}, {p['status']}) [приложение]")
         if p["status"] == "confirmed" and p["worker_id"] and p["worker_id"] != u["id"]:
             _bg(notify_user(self.bot, db, p["worker_id"], f"⚠️ Удалена оплата {esc(p['client_name'])} · "
