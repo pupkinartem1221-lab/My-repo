@@ -5,9 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#000000">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' https://telegram.org; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' https://*.trycloudflare.com https://api.github.com https://raw.githubusercontent.com; frame-src blob:; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
   <title>CRM</title>
-  <link rel="stylesheet" href="style.css?v=3">
-  <script src="https://telegram.org/js/telegram-web-app.js?59"></script>
+  <link rel="stylesheet" href="style.css?v=4">
+  <script src="https://telegram.org/js/telegram-web-app.js?59" referrerpolicy="no-referrer"></script>
 </head>
 <body>
   <div id="app">
@@ -19,6 +21,6 @@
   <nav id="tabs" class="tabs hidden"></nav>
   <div id="sheet-root"></div>
   <div id="toast-root"></div>
-  <script src="app.js?v=9"></script>
+  <script src="app.js?v=10"></script>
 </body>
 </html>

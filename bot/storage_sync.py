@@ -151,7 +151,7 @@ class DataSync:
                 f.write(blob)
             with open(os.path.join(d, "README.md"), "w") as f:
                 f.write("Зашифрованные данные CRM-бота. Не редактировать и не удалять.\n")
-            for name, content in self.extra_files.items():
+            for name, content in dict(self.extra_files).items():
                 with open(os.path.join(d, name), "w") as f:
                     f.write(content)
             self._git("add", ".", cwd=d)

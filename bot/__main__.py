@@ -120,15 +120,19 @@ async def main() -> None:
             raise SystemExit("Финальное сохранение не удалось")
 
 
-async def pages_available(url: str) -> bool:
-    """Опубликовано ли приложение на GitHub Pages (иначе отдаём его через туннель)."""
-    try:
-        import aiohttp
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
-            async with s.get(url + "app.js") as r:
-                return r.status == 200
-    except Exception:
-        return False
+async def pages_available(url: str, tries: int = 4) -> bool:
+    """Опубликовано ли приложение на GitHub Pages (иначе отдаём его через туннель). С повторами."""
+    import aiohttp
+    for i in range(tries):
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
+                async with s.get(url + "app.js") as r:
+                    if r.status == 200:
+                        return True
+        except Exception:
+            pass
+        await asyncio.sleep(5 * (i + 1))
+    return False
 
 
 def planned_stop_delay(run_seconds: int) -> float:
@@ -210,12 +214,21 @@ async def run_bot(cfg, db: DB, persister: Persister) -> None:
         runner = await start_server(db, bot, cfg.token, origin, cfg.api_port, static_dir)
 
         async def on_url(api_url: str):
+            ts = now()
+            # 1) сразу публикуем новый адрес — приложение найдёт его за секунды
+            persister.sync.extra_files["api.json"] = json.dumps({"api": api_url, "at": ts, "ts": ts})
+            db.dirty = True
+            asyncio.create_task(persister.save())
+            # 2) кнопка «📱 CRM»: постоянный адрес Pages (если доступен)
             base = cfg.pages_url if cfg.pages_url and await pages_available(cfg.pages_url) else f"{api_url}/app/"
-            keyboards.APP_URL = f"{base}?api={quote(api_url, safe='')}"
-            await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(
-                text="📱 CRM", web_app=WebAppInfo(url=keyboards.APP_URL)))
-            persister.sync.extra_files["api.json"] = json.dumps({"api": api_url, "at": now()})
-            db.dirty = True  # сохранить api.json при ближайшем сохранении
+            keyboards.APP_URL = f"{base}?api={quote(api_url, safe='')}&at={ts}"
+            for attempt in range(4):
+                try:
+                    await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(
+                        text="📱 CRM", web_app=WebAppInfo(url=keyboards.APP_URL)))
+                    break
+                except Exception:
+                    await asyncio.sleep(5 * (attempt + 1))
             log.info("Приложение доступно (%s)", "GitHub Pages" if base == cfg.pages_url else "через туннель")
         tunnel = Tunnel(cfg.cloudflared, cfg.api_port, on_url)
 

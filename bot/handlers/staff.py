@@ -11,7 +11,7 @@ from ..middleware import PENDING_TTL
 from ..notify import notify_admins, send_safe
 from ..ui import forget, show
 from ..rules import set_percent, worker_total
-from ..utils import ROLES, clip, esc, fmt_money, fmt_short, is_admin, now, user_name
+from ..utils import ROLES, clip, esc, fmt_money, fmt_short, is_admin, now, pays, user_name
 
 router = Router(name="staff")
 USERNAME_RE = re.compile(r"[a-z](?!.*__)[a-z0-9_]{2,30}[a-z0-9]")
@@ -54,7 +54,7 @@ def status_label(u) -> str:
         return "🔔 ждёт подтверждения"
     if not u["nick"]:
         return "⏳ не указал ник"
-    return "✅ в работе"
+    return "✅ активен"
 
 
 # ---------- список ----------
@@ -79,7 +79,7 @@ async def list_view(db: DB, user):
     text = f"👤 <b>Команда</b> · {len(rows)}"
     if waiting:
         text += f"\n\n🔔 Ждут подтверждения: {waiting}"
-    text += "\n\n<i>⏳ не открыл бота · 🔔 ждёт подтверждения · ⌛ истекло</i>"
+    text += "\n\n<i>✅ активен · ⏳ не открыл бота · 🔔 ждёт подтверждения · ⌛ истекло</i>"
     return text, kb(*buttons)
 
 
@@ -132,7 +132,7 @@ async def card_view(db: DB, user, uid: int, note: str = ""):
         top.append(btn("💯 Процент", f"st:p:{uid}"))
     rows.append(top)
     if can_manage(user, u):
-        rows.append([danger_btn("🗑 Удалить", f"st:del:{uid}")])
+        rows.append([danger_btn("🗑 Удалить из команды", f"st:del:{uid}")])
     rows.append([back_btn("st:list", "« Команда"), home_btn()])
     return "\n".join(lines), kb(*rows)
 
@@ -258,7 +258,7 @@ async def save_percent(event, state: FSMContext, db: DB, user, bot: Bot, value: 
     total = await worker_total(db, uid)
     await db.audit(user["id"], f"Процент {u['nick'] or u['username']}: {u['percent']:g}% → {value:g}% "
                                f"(пересчитано оплат: {n})")
-    await open_card(event, db, user, uid, f"✅ Процент: {value:g}%\nЗаработок пересчитан: {fmt_money(total)} ({n} опл.)")
+    await open_card(event, db, user, uid, f"✅ Процент: {value:g}%\nЗаработок пересчитан: {fmt_money(total)} ({pays(n)})")
     if uid != user["id"] and u["tg_id"]:
         await send_safe(bot, u["tg_id"], f"💯 Ваш процент теперь <b>{value:g}%</b>\n"
                                          f"Заработок пересчитан: <b>{fmt_money(total)}</b>")

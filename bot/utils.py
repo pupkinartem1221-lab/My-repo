@@ -39,6 +39,17 @@ def fmt_dt(ts: int | None) -> str:
     return datetime.fromtimestamp(ts, TZ).strftime("%d.%m.%Y %H:%M")
 
 
+def plural(n: int, one: str, few: str, many: str) -> str:
+    n = int(n or 0)
+    m, mm = n % 10, n % 100
+    word = one if m == 1 and mm != 11 else few if 2 <= m <= 4 and not 12 <= mm <= 14 else many
+    return f"{n} {word}"
+
+
+def pays(n: int) -> str:
+    return plural(n, "оплата", "оплаты", "оплат")
+
+
 def fmt_short(ts: int | None) -> str:
     if not ts:
         return "—"

@@ -13,7 +13,7 @@ BTN_NEW_CLIENT = "➕ Новый клиент"
 BTN_RECEIPTS = "🧾 Квитанции"
 BTN_REQS = "💳 Реквизиты"
 BTN_REPORTS = "📊 Отчёты"
-BTN_STAFF = "👤 Сотрудники"
+BTN_STAFF = "👤 Команда"
 BTN_LOG = "📜 Журнал"
 BTN_MY_STATS = "📊 Моя статистика"
 
